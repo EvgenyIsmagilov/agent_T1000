@@ -48,7 +48,9 @@ Applies when defining or reviewing a table (DDL, `CREATE TABLE AS`, or an ETL ta
 ## Performance
 
 - Primary dialect is Trino on Iceberg (see the `sql-data-reviewer` agent); otherwise follow the project's actual dialect.
-- Filter on partition columns and push predicates down before joins and aggregations.
+- Filter on the table's partition and bucketing columns whenever scanning a partitioned table, and put those predicates first in the `WHERE` clause, ahead of everything else. (Trino's optimizer treats an `AND`-chain as an unordered set — position doesn't change the plan — but leading with them makes pruning coverage obvious to a reviewer, so it's required style here regardless.)
+- Never filter a partition/bucket column through a function, expression, or `CAST` (e.g. `MONTH(ds_partition) = 8`) — write a direct comparison/range on the raw column instead, or pruning silently stops working.
+- Push predicates down before joins and aggregations.
 - Select only the columns you need; avoid full-table scans.
 - Watch for shuffle, spill, and skew on large joins/aggregations; reduce data before wide operations.
 - Run non-trivial or production queries through the `sql-data-reviewer` agent.

@@ -32,8 +32,15 @@ Apply these standards for any git, PR, or MR work. The repository's existing con
 ## Pull and merge requests
 
 - GitHub: use `gh`. GitLab: use `glab` when available; otherwise prepare the title and description and hand them over for manual creation.
-- One PR/MR = one coherent change. The title follows commit-subject rules.
-- Description: what changed, why, how it was verified (commands and results), known risks or limitations. State plainly what was not tested.
+- One PR/MR = one coherent change. The title follows commit-subject rules and must be eloquent — descriptive enough that a reviewer grasps the essence of the change without opening the diff.
+- Description must open with this template, filled in:
+  ```
+  * модель планировщик:
+  * модель разработчик:
+  * модель ревьюер:
+  * что сделано:
+  ```
+  Followed by what changed, why, how it was verified (commands and results), known risks or limitations. State plainly what was not tested.
 - Confirm the target branch is the intended one before creating.
 - Merge only with green CI and the approvals the repo requires.
 

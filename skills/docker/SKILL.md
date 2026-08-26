@@ -71,12 +71,24 @@ For every persistent path, know what data it holds, whether it can be recreated,
 - Avoid privileged mode, host networking, host PID, and broad device mounts unless required and justified.
 - Preserve signal handling and use an appropriate init process when the application does not reap child processes correctly.
 
+## Building images
+
+Do not build images on the Raspberry Pi home server (`rpi`). A build pins all four cores and hammers the USB-attached SSD at the same time; the combined current draw sags the 5V rail, and undervoltage is exactly the condition that precedes USB disk drops on that box.
+
+Build elsewhere and ship the result:
+
+- build for `linux/arm64` on a workstation (`docker buildx build --platform linux/arm64`), then push to a registry or move the image with `docker save` piped to `docker load` over ssh;
+- prefer prebuilt upstream images — pulling is cheap on the Pi, building is not;
+- if a build on the Pi is genuinely unavoidable, say so first, run it while nothing else is loaded, and check `vcgencmd get_throttled` afterwards.
+
+This covers `docker build`, `docker compose build`, and `docker compose up --build`.
+
 ## Validation
 
 Use the project's existing validation commands. Otherwise:
 
 1. run `docker compose config`;
-2. build affected images without hiding errors;
+2. build affected images without hiding errors, on a host that may build them (see Building images);
 3. start only in a safe environment when permitted;
 4. verify health status and dependency readiness;
 5. verify volume mappings, permissions, and restart behavior.
