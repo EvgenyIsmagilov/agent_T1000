@@ -12,7 +12,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-ATTRIBUTION = "-- Claude Evgeny Ismagilov"
+ATTRIBUTION = "-- Claude Code agent"
 ALLOWED_WRITE_TARGET = re.compile(r"^(ic\.)?temp\.", re.IGNORECASE)
 DDL_DML_KEYWORDS = re.compile(
     r"\b(CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|MERGE|TRUNCATE|GRANT|REVOKE)\b",
