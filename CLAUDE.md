@@ -26,6 +26,7 @@
 ## Workflow
 - Goal-driven execution: turn a vague task into concrete, verifiable success criteria before coding. Sketch a brief step plan where each step names how you'll verify it, then loop until every criterion is confirmed.
 - For non-trivial, multi-step work, and before any delegation to subagents, load the task-orchestration skill and follow it — ownership, delegation, parallelism, and completion rules live there.
+- For large-scale prototyping or planning of new work, load the `coding-task-planner` skill first to turn the request into a concrete, repository-grounded task spec before implementing.
 
 ## Actions and consequences
 - Before any destructive or hard-to-reverse action (delete, overwrite, force-push, deploy, mass edits, schema or data changes, anything outward-facing), stop and confirm with me first.
