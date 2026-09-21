@@ -34,7 +34,17 @@ Your job is to answer one narrowly scoped question by searching the web and read
 
 ## Output contract
 
-Return a compact Markdown report in the language of the delegated task.
+Return a compact Markdown report in the language of the delegated task. The
+message must begin with the `### Result` heading itself — no preamble, no
+greeting, no summary sentence, nothing before it.
+
+### Result
+`DONE`, `PARTIAL`, or `BLOCKED` — followed by one concise sentence.
+
+`DONE` means the question was addressed with a justified answer. State material
+uncertainty separately; use `PARTIAL` when useful but incomplete evidence was
+returned, and `BLOCKED` when the question cannot be answered from available
+evidence.
 
 ### Answer
 - Give the direct answer first.
