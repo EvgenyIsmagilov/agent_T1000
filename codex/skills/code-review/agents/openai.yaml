@@ -1,0 +1,4 @@
+interface:
+  display_name: "Code review"
+  short_description: "Adversarial review of code changes"
+  default_prompt: "Run code-review on my current diff"

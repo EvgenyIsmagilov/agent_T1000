@@ -1,0 +1,4 @@
+interface:
+  display_name: "Linux server admin"
+  short_description: "Linux server administration and hardening standards"
+  default_prompt: "Configure this service following the infra skill"

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Python standards"
+  short_description: "Python coding and typing standards"
+  default_prompt: "Apply the python skill to this code"

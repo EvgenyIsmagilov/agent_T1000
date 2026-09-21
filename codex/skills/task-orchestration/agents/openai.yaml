@@ -1,0 +1,4 @@
+interface:
+  display_name: "Task Orchestration"
+  short_description: "Tiered workers behind test and review gates"
+  default_prompt: "Use $task-orchestration to coordinate this code change."

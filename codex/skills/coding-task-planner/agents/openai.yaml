@@ -1,0 +1,4 @@
+interface:
+  display_name: "Coding Task Planner"
+  short_description: "Plan a task spec for a coding agent to implement"
+  default_prompt: "Turn this into a task spec for a coding agent"

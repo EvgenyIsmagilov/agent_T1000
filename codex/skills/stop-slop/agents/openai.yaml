@@ -1,0 +1,4 @@
+interface:
+  display_name: "Stop slop"
+  short_description: "Remove AI writing patterns from prose"
+  default_prompt: "Clean this text with the stop-slop skill"

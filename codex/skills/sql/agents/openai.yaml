@@ -1,0 +1,4 @@
+interface:
+  display_name: "SQL standards"
+  short_description: "SQL style and correctness standards for Trino/Iceberg"
+  default_prompt: "Write this query following the sql skill"

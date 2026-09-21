@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pick the worker tier"
+  short_description: "Classify a slice into T1, T2 or T3"
+  default_prompt: "Classify this slice into a worker tier before we delegate it"

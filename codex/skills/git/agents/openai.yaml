@@ -1,0 +1,4 @@
+interface:
+  display_name: "Git and PR conventions"
+  short_description: "Commit, branch, and PR/MR standards"
+  default_prompt: "Commit my current changes following the git skill"

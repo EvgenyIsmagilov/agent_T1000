@@ -1,0 +1,4 @@
+interface:
+  display_name: "Grill a plan"
+  short_description: "Stress-test a plan before building"
+  default_prompt: "Grill my plan before we build it"

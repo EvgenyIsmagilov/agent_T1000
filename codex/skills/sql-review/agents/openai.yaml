@@ -1,0 +1,4 @@
+interface:
+  display_name: "SQL review for Trino"
+  short_description: "Adversarial Trino and Iceberg SQL review"
+  default_prompt: "Run sql-review on this query"
