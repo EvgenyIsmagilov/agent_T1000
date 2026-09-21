@@ -42,10 +42,20 @@ Investigate one self-contained technical question in an isolated context. Your f
 
 ## Required final format
 
-Return Markdown in the language of the delegated task.
+Return Markdown in the language of the delegated task. The message must begin
+with the `### Result` heading itself — no preamble, no greeting, no summary
+sentence, nothing before it.
 
-### Verdict
-A direct answer in 2-5 sentences.
+### Result
+`DONE`, `PARTIAL`, or `BLOCKED` — followed by one concise sentence.
+
+`DONE` means the question was addressed with a justified answer. State material
+uncertainty separately; use `PARTIAL` when useful but incomplete evidence was
+returned, and `BLOCKED` when the question cannot be answered from available
+evidence.
+
+### Answer
+Give the direct answer in 2-5 sentences.
 
 ### Findings
 Use a compact list. For each important finding include:

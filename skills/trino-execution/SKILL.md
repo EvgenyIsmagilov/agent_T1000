@@ -44,7 +44,7 @@ The default is **not** to run a query. Every one has to earn its existence.
 
 - **DDL/DML only in `ic.temp`.** `CREATE`, `ALTER`, `DROP`, `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `TRUNCATE` are allowed only against the `temp` schema of catalog `ic`. Anywhere else in `ic` (`gold`, `silver`, `bronze`, `sales`, ...), only `SELECT`. If a task seems to require mutating a non-`temp` table, stop and say so — do not find a workaround.
 - **One statement per call.** Never send more than one `;`-separated statement to `execute_query` in a single call — one query, one call.
-- **Attribution comment on every query.** Every query sent to `execute_query`/`explain_query` must start with `-- Claude Evgeny Ismagilov` on its own line. (The hook auto-injects this if you forget — but write it yourself; don't rely on the hook.)
+- **Attribution comment on every query.** Every query sent to `execute_query`/`explain_query` must start with `-- Claude <your name>` on its own line. (The hook auto-injects this if you forget — but write it yourself; don't rely on the hook.)
 - **Partition filter on every query that reads data.** Not just extractions — **aggregates too**. `count(*)`, `min`/`max`, `GROUP BY`, `approx_distinct` over a whole table are full scans of every partition, and "I was only profiling / just curious" is not an exemption. Confirm the table's partition column first (`get_table_schema` / `SHOW CREATE TABLE` / `information_schema`) and filter on it: put that predicate first in the `WHERE` clause, ahead of other conditions, in sargable form — the raw column, never wrapped in a function or `CAST` (e.g. `MONTH(ds_partition) = 8` silently kills pruning). Leading position is required style here for fast review, not something the optimizer needs on its own (it treats an `AND`-chain as an unordered set). Scanning the full history is a decision to state out loud and get agreement on, never a default.
 - **`LIMIT 100` on exploratory queries.** When the goal is "see what's in this table" rather than extracting a full result, always cap with `LIMIT 100`. But be clear on what `LIMIT` does: on a bare `SELECT *` it can stop the scan early; **on top of an aggregate it only trims the output, not the read**. `SELECT ... FROM t GROUP BY x LIMIT 100` still scans all of `t`. For aggregates the only real protection is the partition filter.
 - **Never print more than 100,000 rows** into chat/notebook output. If a task genuinely needs more, stop and ask the user for explicit permission before running it — do not decide on your own that it's justified.
@@ -76,7 +76,7 @@ It does **not** and cannot reliably check ascetic querying, the partition-filter
 
 ## Persisting results in the notebook
 
-`/Users/evgen/Axlebolt/notebook_for_llm.ipynb` is where results get written down for the user. Only append new cells there — never delete or overwrite a previous cell, since the cell history doubles as an audit trail. Keep it scoped to Trino work only.
+A notebook outside the repository (set its path in your own copy of this skill) is where results get written down for the user. Only append new cells there — never delete or overwrite a previous cell, since the cell history doubles as an audit trail. Keep it scoped to Trino work only.
 
 ## Judgment calls
 
