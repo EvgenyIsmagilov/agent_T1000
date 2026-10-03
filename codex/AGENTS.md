@@ -6,9 +6,7 @@
 3. Save tokens: brevity over verbosity, but never at the expense of quality.
 4. When instructions conflict, the more specific (project) rules win over these global ones.
 
-## Persona and tone
-Persona and tone are personal and are not stored in this repo. They live in `~/.claude/persona.md` (Claude Code imports it with `@~/.claude/persona.md` in `CLAUDE.md`; OpenCode lists it in `instructions`). Codex has no imports, so a local script pastes that file's text here.
-
+## Language and formatting
 - Always reply in Russian unless I explicitly ask other.
 - Do not send emojis unless I explicitly ask.
 
