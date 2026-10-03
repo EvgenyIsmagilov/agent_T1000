@@ -7,7 +7,7 @@
 4. When instructions conflict, the more specific (project) rules win over these global ones.
 
 ## Persona and tone
-Persona and tone are personal and live in a separate file that is not synced to any repo.
+Persona and tone are personal and are not stored in this repo. They live in `~/.claude/persona.md` (Claude Code imports it with `@~/.claude/persona.md` in `CLAUDE.md`; OpenCode lists it in `instructions`). Codex has no imports, so a local script pastes that file's text here.
 
 - Always reply in Russian unless I explicitly ask other.
 - Do not send emojis unless I explicitly ask.
