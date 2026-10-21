@@ -1,37 +1,23 @@
 # DeepSeek Harness (DSH)
 
-DSH-specific pieces of the same agent setup as `../.claude` and `../.codex`.
-Tested with DSH 0.2.x only.
+This directory holds the DSH parts of the agent setup. The other parts are in `../.claude` and `../.codex`. The files were tested with DSH 0.2.x only.
 
-## What is here
+## Files in this directory
 
-- `AGENTS.md` — the global instructions DSH reads from `$DSH_HOME/AGENTS.md`
-  (`~/.dsh/AGENTS.md`). It is **generated**, not hand-written: `gen_dsh.py`
-  inlines `../.claude/CLAUDE.md` and the text of each `@path` import, because
-  DSH does not expand `@path`. This copy was built with the neutral
-  `../.claude/persona.example.md` in place of the personal persona file.
-- `skills-local/` — DSH versions of the skills whose text differs from the
-  Claude Code version (`task-orchestration`, `code-tier-assessment`): models,
-  delegation tool, no turn budget.
+- `AGENTS.md` is the global instruction file. DSH reads it from `$DSH_HOME/AGENTS.md`, which is `~/.dsh/AGENTS.md`. The script `gen_dsh.py` generates it. Do not edit it by hand. The script copies `../.claude/CLAUDE.md` into the file and adds the text of each `@path` import, because DSH does not expand `@path`. This copy uses the neutral file `../.claude/persona.example.md` in place of the personal persona file.
+- `skills-local/` holds the DSH versions of two skills: `task-orchestration` and `code-tier-assessment`. Their text differs from the Claude Code version in three points: the models, the delegation tool, and the missing turn budget.
 
-## Where the rest lives
+## Files in other directories
 
-DSH has no named subagents of its own. Each role is one
-`@deepseek-ai/dsh-tool-subagent` row plus one agent preset in the profile
-patch file. `../.claude/tools/gen_dsh.py` builds those from
-`../.claude/agents/*.md`:
+DSH has no named subagents. Each role needs one `@deepseek-ai/dsh-tool-subagent` row and one agent preset in the profile patch file. The script `gen_dsh.py` builds both from `../.claude/agents/*.md`.
 
-- `../.claude/tools/gen_dsh.py` — the generator (`--dry-run` shows the diff,
-  `--write` applies it; close the DSH app before `--write`, the app rewrites
-  the patch file). `../.claude/tools/test_gen_dsh.py` tests it.
-- `../.claude/hooks/dsh-hooks.json` and `../.claude/hooks/dsh_adapter.py` —
-  the hook configuration for `@deepseek-ai/dsh-hooks-claude-code` and the
-  adapter that runs the Claude Code hook scripts under it. The command lines
-  contain the placeholder `/Users/USER`: replace it with your home directory
-  before you use the file.
+- `../.claude/tools/gen_dsh.py` is the generator. Use `--dry-run` to see the changes. Use `--write` to apply them. Close the DSH app before you use `--write`, because the app rewrites the patch file.
+- `../.claude/tools/test_gen_dsh.py` tests the generator.
+- `../.claude/hooks/dsh-hooks.json` is the hook configuration for `@deepseek-ai/dsh-hooks-claude-code`.
+- `../.claude/hooks/dsh_adapter.py` runs the Claude Code hook scripts under DSH.
+- The command lines in `dsh-hooks.json` contain the placeholder `/Users/USER`. Replace it with your home directory before you use the file.
 
-## What is not here, on purpose
+## What is not in this directory
 
-- `profiles/*/cordis.patch.yml`: the app owns and rewrites it, and it holds
-  provider routes and local endpoints. Generate it with `gen_dsh.py`.
-- `.credentials.yaml`, `.env`, sessions, and storages.
+- The files `profiles/*/cordis.patch.yml`. The app owns and rewrites them. They hold provider routes and local endpoints. Use `gen_dsh.py` to generate them.
+- The file `.credentials.yaml`, the file `.env`, the sessions, and the storages.
