@@ -1,0 +1,4 @@
+interface:
+  display_name: "Docker standards"
+  short_description: "Dockerfile and Compose standards"
+  default_prompt: "Review my compose file with the docker skill"

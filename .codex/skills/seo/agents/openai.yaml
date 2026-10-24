@@ -1,0 +1,4 @@
+interface:
+  display_name: "SEO for Google and Yandex"
+  short_description: "Audit, semantic core, and on-page SEO"
+  default_prompt: "Run an SEO audit of this site with the seo skill"

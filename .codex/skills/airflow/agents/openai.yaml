@@ -1,0 +1,4 @@
+interface:
+  display_name: "Airflow standards"
+  short_description: "Apache Airflow DAG and orchestration standards"
+  default_prompt: "Apply the airflow skill to this DAG"

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Trino execution"
+  short_description: "Runtime discipline for querying Trino/Iceberg"
+  default_prompt: "Apply the trino-execution skill before running this query"

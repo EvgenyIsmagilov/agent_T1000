@@ -1,0 +1,4 @@
+interface:
+  display_name: "Debugging"
+  short_description: "Evidence-based root-cause diagnosis"
+  default_prompt: "Diagnose this failure using the debugging skill"
