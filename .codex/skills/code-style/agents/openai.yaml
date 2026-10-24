@@ -1,0 +1,4 @@
+interface:
+  display_name: "Code style"
+  short_description: "Change size, scope, and code hygiene rules"
+  default_prompt: "Apply the code-style skill to this change"
