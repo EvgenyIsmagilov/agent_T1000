@@ -1,0 +1,4 @@
+interface:
+  display_name: "Godot standards"
+  short_description: "Godot 4.x engine and GDScript standards"
+  default_prompt: "Apply the godot skill to this scene code"

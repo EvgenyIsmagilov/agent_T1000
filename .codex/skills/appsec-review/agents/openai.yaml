@@ -1,0 +1,4 @@
+interface:
+  display_name: "AppSec review"
+  short_description: "Security review of code and config changes"
+  default_prompt: "Run appsec-review on my current diff"

@@ -1,0 +1,68 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__trino__execute_query|mcp__trino__explain_query",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/USER/.claude/hooks/dsh_adapter.py trino-guardrail || exit 2",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/USER/.claude/hooks/dsh_adapter.py check-file-size",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "edit|write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/USER/.claude/hooks/dsh_adapter.py config-protection || exit 2",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/USER/.claude/hooks/dsh_adapter.py track-skill",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "^(reviewer|planner|finding-verifier|bug-investigator|test-runner|web-researcher|docs-researcher|code-writer-t1|code-writer-t2|code-writer-t3|subagent)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/USER/.claude/hooks/dsh_adapter.py require-orchestration",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(reviewer|planner|finding-verifier|bug-investigator|test-runner|web-researcher|docs-researcher|code-writer-t1|code-writer-t2|code-writer-t3)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/USER/.claude/hooks/dsh_adapter.py log-run",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

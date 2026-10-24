@@ -1,0 +1,8 @@
+#!/bin/sh
+# Fail-closed: a missing guard blocks the push. Ref lines on stdin go to the guard.
+guard="$(dirname "$0")/../persona-guard.py"
+if [ ! -f "$guard" ]; then
+  echo "persona-guard: script not found, blocking" >&2
+  exit 2
+fi
+exec python3 "$guard" --pre-push
