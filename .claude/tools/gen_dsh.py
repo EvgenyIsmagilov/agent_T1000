@@ -156,7 +156,7 @@ DSPARK_ROUTE: dict[str, Any] = {
   "displayName": "Local Spark",
   "apiKeyEnv": "DSPARK_API_KEY",
   "api": "openai-completions",
-  "baseURL": "http://192.168.108.187:8000/v1",
+  "baseURL": "",  # адрес не зашит: берётся из маршрута пользователя, --dspark-url или DSPARK_BASE_URL
   "models": [{
     "id": "deepseek-v4-flash", "contextWindow": 350000, "maxTokens": 8192,
     "input": ["text"], "reasoningEfforts": False,
@@ -207,6 +207,7 @@ class Inputs:
   other_presets: list[Any] = field(default_factory=list)  # остальные поставляемые пресеты
   global_working_directory: bool = True
   global_entries: list[Any] = field(default_factory=list)  # действующее дерево base + Web, без пользовательского патча
+  dspark_url: str | None = None  # явный адрес маршрута dspark: --dspark-url или DSPARK_BASE_URL
 
 
 @dataclass
@@ -931,11 +932,12 @@ def status(old: str | None, new: str) -> str:
 # --- слияние провайдеров ---------------------------------------------------------------------
 
 def merge_providers(
-  llm: Any, model_ids: Sequence[str]
+  llm: Any, model_ids: Sequence[str], dspark_url: str | None = None
 ) -> tuple[list[tuple[str, str]], list[str]]:
   """Add missing OpenRouter models and the dspark route to the llm-pi-ai entry, in place.
 
-  An existing dspark route keeps every key this tool does not set; each one is reported by name."""
+  An existing dspark route keeps every key this tool does not set; each one is reported by name.
+  Its baseURL is the user's own when there is one, else `dspark_url`; with neither the run stops."""
   config = llm.get("config")
   providers = config.get("providers") if isinstance(config, dict) else None
   route = providers.get("openrouter") if isinstance(providers, dict) else None
@@ -951,17 +953,23 @@ def merge_providers(
         added.append(model_id)
   warnings: list[str] = []
   old = providers.get("dspark")
+  wanted = copy.deepcopy(DSPARK_ROUTE)
+  wanted["baseURL"] = (old.get("baseURL") if isinstance(old, dict) else None) or dspark_url
+  if not wanted["baseURL"]:
+    raise GeneratorError(
+      "no endpoint for the dspark route: pass --dspark-url or set the DSPARK_BASE_URL environment variable"
+    )
   if isinstance(old, dict):
-    stale = [key for key, value in DSPARK_ROUTE.items() if canon(old.get(key)) != canon(value)]
+    stale = [key for key, value in wanted.items() if canon(old.get(key)) != canon(value)]
     for key in stale:
-      old[key] = copy.deepcopy(DSPARK_ROUTE[key])
+      old[key] = copy.deepcopy(wanted[key])
     dspark = "update" if stale else "unchanged"
     warnings = [
       f"llm-pi-ai dspark route: kept key '{key}', this tool does not set it" for key in old
       if key not in DSPARK_ROUTE
     ]
   else:
-    providers["dspark"] = copy.deepcopy(DSPARK_ROUTE)
+    providers["dspark"] = wanted
     dspark = "add" if old is None else "update"
   changes = [
     ("llm-pi-ai openrouter models", f"add {', '.join(added)}" if added else "unchanged"),
@@ -1059,7 +1067,7 @@ def apply(old_text: str, inputs: Inputs) -> Result:
   body, gap = split_gap(chunks[llm_i])
   llm = load(body, f"row '{LLM_ROW_ID}'")[0]
   model_ids = list(dict.fromkeys(r.model for r in inputs.roles if r.route == "openrouter"))
-  changes, merge_warnings = merge_providers(llm, model_ids)
+  changes, merge_warnings = merge_providers(llm, model_ids, inputs.dspark_url)
   result.changes.extend(changes)
   result.warnings.extend(merge_warnings)
   if canon(llm) != canon(data[llm_i]):
@@ -1100,7 +1108,7 @@ def apply(old_text: str, inputs: Inputs) -> Result:
   return result
 
 
-def build_plan(paths: Paths) -> Plan:
+def build_plan(paths: Paths, dspark_url: str | None = None) -> Plan:
   try:
     old_text = paths.patch_file.read_bytes().decode("utf-8")  # без перевода строк: бэкап должен быть точным
   except (OSError, UnicodeDecodeError) as e:
@@ -1109,7 +1117,7 @@ def build_plan(paths: Paths) -> Plan:
   other_presets, global_workdir, global_entries = load_other_presets(paths.asar)
   inputs = Inputs(
     load_shipped_preset(paths.asar), roles, str(paths.farm), str(paths.hooks_config),
-    other_presets, global_workdir, global_entries
+    other_presets, global_workdir, global_entries, dspark_url
   )
   result = apply(old_text, inputs)
   if apply(result.text, inputs).text != result.text:
@@ -1467,12 +1475,16 @@ def main(
   parser.add_argument("--dsh-skills-local", dest="local_skills", type=Path, default=home / ".dsh/skills-local")
   parser.add_argument("--skills-farm", dest="farm", type=Path, default=home / ".dsh/skills-shared")
   parser.add_argument("--hooks-config", type=Path, default=home / ".claude/hooks/dsh-hooks.json")
+  parser.add_argument(
+    "--dspark-url", default=None,
+    help="baseURL for the dspark route when the patch has none (default: the DSPARK_BASE_URL environment variable)",
+  )
   args = parser.parse_args(argv)
   paths = Paths(**{f.name: getattr(args, f.name) for f in fields(Paths)})  # dest каждого флага = поле Paths
   try:
     if args.write:
       require_app_stopped(app_running)
-    plan = build_plan(paths)
+    plan = build_plan(paths, args.dspark_url or os.environ.get("DSPARK_BASE_URL"))
     print(format_summary(plan, paths.patch_file, with_diff=not args.write))
     if args.write:
       write_outputs(plan, paths, app_running)

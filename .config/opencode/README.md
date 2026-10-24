@@ -39,16 +39,22 @@ transfer as-is. The pieces that matter for orchestration are these two
     "skill": {
       "*": "deny",
       "airflow": "allow",
+      "appsec-review": "allow",
+      "code-review": "allow",
       "code-style": "allow",
       "code-tier-assessment": "allow",
+      "debugging": "allow",
       "docker": "allow",
       "git": "allow",
       "grilling": "allow",
       "infra": "allow",
       "python": "allow",
       "seo": "allow",
+      "sql": "allow",
+      "sql-review": "allow",
       "stop-slop": "allow",
-      "task-orchestration": "allow"
+      "task-orchestration": "allow",
+      "trino-execution": "allow"
     }
   },
   "command": {

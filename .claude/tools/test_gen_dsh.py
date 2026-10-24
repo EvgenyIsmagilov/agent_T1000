@@ -123,6 +123,9 @@ DSPARK_EDITED = """\
         displayName: Old Spark
         apiKey: sk-FAKE-DSPARK-0004
 """
+# The same route with an endpoint of the user's own.
+DSPARK_OWN_URL = DSPARK_EDITED + "        baseURL: https://own.example.invalid/v1\n"
+DSPARK_URL = "https://model.example.invalid/v1"  # reserved TLD: never resolves
 DEEPSEEK = """\
 - id: llm-deepseek
   name: "@deepseek-ai/dsh-llm-deepseek-api-key"
@@ -410,13 +413,17 @@ class World:
     text = f"---\nname: {name}\ndescription: fake\ntools: {tools}\n{frontmatter}---\n\nBody of {name}.\n"
     (self.agents / f"{name}.md").write_text(text, encoding="utf-8")
 
-  def run(self, flag: str, *, app_running: Callable[[], bool] = lambda: False) -> int:
+  def run(
+    self, flag: str, *, app_running: Callable[[], bool] = lambda: False, dspark_url: str | None = DSPARK_URL
+  ) -> int:
     argv = [
       flag, "--patch-file", str(self.patch), "--asar", str(self.asar), "--agents-dir", str(self.agents),
       "--claude-md", str(self.claude_md), "--agents-md", str(self.agents_md),
       "--claude-skills", str(self.claude_skills), "--dsh-skills-local", str(self.local_skills),
       "--skills-farm", str(self.farm), "--hooks-config", str(self.hooks_config),
     ]
+    if dspark_url is not None:
+      argv += ["--dspark-url", dspark_url]
     return gen_dsh.main(argv, app_running=app_running)
 
   def backups(self) -> list[Path]:
@@ -432,6 +439,7 @@ class World:
 @pytest.fixture
 def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> World:
   monkeypatch.setenv("HOME", str(tmp_path))  # the skills dir (and any default path) stays inside tmp_path
+  monkeypatch.delenv("DSPARK_BASE_URL", raising=False)  # a developer's own setting must not leak into the tests
   return World(tmp_path)
 
 
@@ -788,6 +796,7 @@ def test_providers_merge_adds_dspark_and_missing_models_and_keeps_the_rest(world
     "qwen/qwen3.8-max-0902", "~deepseek/deepseek-v4-flash-latest", "~google/gemini-flash-latest",
   }
   assert providers["dspark"]["apiKeyEnv"] == "DSPARK_API_KEY"
+  assert providers["dspark"]["baseURL"] == DSPARK_URL
   assert "apiKey" not in providers["dspark"]
   assert providers["dspark"]["models"][0]["id"] == "deepseek-v4-flash"
   assert entry(text, "llm-deepseek") == entry(PATCH, "llm-deepseek")
@@ -813,6 +822,47 @@ def test_existing_dspark_route_keeps_keys_the_tool_does_not_set_and_names_them(
   assert dspark["displayName"] != "Old Spark"
   assert "dspark route: kept key 'apiKey'" in out
   assert "sk-FAKE-DSPARK-0004" not in out  # the key is named, its value is not
+
+
+def test_merge_providers_preserves_user_endpoint_and_credentials(world: World) -> None:
+  world.patch.write_text(HEADER + UI_CHAT + LLM + DSPARK_OWN_URL + DEEPSEEK, encoding="utf-8")
+
+  assert world.run("--write") == 0  # the option is given, the user's own endpoint still wins
+
+  dspark = entry(world.patch.read_text(encoding="utf-8"), "llm-pi-ai")["config"]["providers"]["dspark"]
+  assert dspark["baseURL"] == "https://own.example.invalid/v1"
+  assert dspark["apiKey"] == "sk-FAKE-DSPARK-0004"
+  assert dspark["apiKeyEnv"] == "DSPARK_API_KEY"
+
+
+def test_dspark_url_comes_from_the_environment_and_the_option_wins(
+  world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  monkeypatch.setenv("DSPARK_BASE_URL", "https://env.example.invalid/v1")
+  assert world.run("--dry-run", dspark_url=None) == 0  # dry-run shares the code path
+  assert world.run("--write", dspark_url=None) == 0
+  providers = entry(world.patch.read_text(encoding="utf-8"), "llm-pi-ai")["config"]["providers"]
+  assert providers["dspark"]["baseURL"] == "https://env.example.invalid/v1"
+
+  world.patch.write_text(PATCH, encoding="utf-8")
+  for backup in world.backups():  # the backup name has one-second resolution
+    backup.unlink()
+  assert world.run("--write") == 0  # the option is given as well as the variable
+  providers = entry(world.patch.read_text(encoding="utf-8"), "llm-pi-ai")["config"]["providers"]
+  assert providers["dspark"]["baseURL"] == DSPARK_URL
+
+
+@pytest.mark.parametrize("flag", ["--dry-run", "--write"])
+def test_no_dspark_endpoint_stops_before_anything_is_written(
+  world: World, capsys: pytest.CaptureFixture[str], flag: str
+) -> None:
+  before = world.patch.read_bytes()
+
+  assert world.run(flag, dspark_url=None) == 1
+
+  err = capsys.readouterr().err
+  assert "--dspark-url" in err and "DSPARK_BASE_URL" in err
+  world.assert_untouched(before)
 
 
 def test_rerun_leaves_the_file_byte_identical(

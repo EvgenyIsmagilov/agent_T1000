@@ -12,7 +12,7 @@ from pathlib import Path
 from types import ModuleType
 
 
-CLAUDE_DIR = Path.home() / ".claude"
+CLAUDE_DIR = Path(__file__).resolve().parent.parent
 HOOK_PATH = CLAUDE_DIR / "hooks" / "log-subagent.py"
 STATS_PATH = CLAUDE_DIR / "tools" / "agent-stats.py"
 FIXTURES_DIR = CLAUDE_DIR / "tools" / "fixtures" / "reports"

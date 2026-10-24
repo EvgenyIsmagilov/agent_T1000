@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Прогоняет golden-фикстуры из ~/.claude/tools/fixtures/reports/ через JS-порт
+// Прогоняет golden-фикстуры из .claude/tools/fixtures/reports/ (от корня репозитория) через JS-порт
 // валидатора (../lib/report-contracts.mjs) и сверяет исход/причину с тем,
 // что ожидает test_agent_reporting.py для тех же файлов. Держит JS и Python
 // валидацию в одном контракте — расхождение здесь означает, что порт отстал
@@ -8,11 +8,11 @@
 // Использование: node ~/.config/opencode/tools/test-report-contracts.mjs
 // Ничего не пишет в ~/.claude/logs — только читает фикстуры.
 import { readFileSync, readdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ROLE_CONTRACTS, validateReport } from "../lib/report-contracts.mjs";
 
-const FIXTURES_DIR = join(homedir(), ".claude", "tools", "fixtures", "reports");
+const FIXTURES_DIR = fileURLToPath(new URL("../../../.claude/tools/fixtures/reports", import.meta.url));
 
 // Зеркало EXTRA_MALFORMED_REASONS в test_agent_reporting.py.
 const EXTRA_MALFORMED_REASONS = {
