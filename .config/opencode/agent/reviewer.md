@@ -8,7 +8,7 @@ models:
   - ~moonshotai/kimi-latest
 reasoning:
   effort: xhigh
-steps: 60
+steps: 120
 tools:
   webfetch: false
 permission:

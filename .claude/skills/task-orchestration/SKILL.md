@@ -64,7 +64,7 @@ Agents without their own `model` (`general-purpose`, `Explore`, `Plan`) run on `
 - Agents with their own `model` keep it. Lower it freely; raise it only with a reason. For `code-writer`, pick a tier file instead — see **Executor tiers**.
 - `opus` is for `reviewer` and `magi-*` only — or when the user asks for it, or approves it after you ask. Ask with the cost: count × model × effort.
 - Mapping a codebase is one `Explore` on `haiku` with a precise question, not a crowd of agents.
-- Know what the heavy roles cost before reaching for one. `reviewer` runs `opus` at `xhigh` effort with 60 turns: an adversarial review of a ~150-line change once took 15 minutes. Right for a risky diff, absurd for a typo.
+- Know what the heavy roles cost before reaching for one. `reviewer` runs `opus` at `xhigh` effort with 120 turns: an adversarial review of a ~150-line change once took 15 minutes. Right for a risky diff, absurd for a typo.
 - At most 10 subagents in flight at once, and only when each answers a different question. Parallel work multiplies spend immediately and drops several reports into your context at the same moment.
 - More than 3 agents at once: first write count × model × effort. Over ~1M tokens in total, ask the user.
 - Never pay twice for the same evidence. A check `code-writer` ran and reported does not get rerun by `test-runner`, and a file a subagent summarized does not get re-read in the main context.

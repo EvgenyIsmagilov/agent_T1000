@@ -37,6 +37,8 @@ Apply these standards for any git, PR, or MR work. The repository's existing con
 
 - GitHub: use `gh`. GitLab: use `glab` when available. Otherwise prepare the title and description for manual creation.
 - Before you use `gh` or `glab`, run `gh auth status` or `glab auth status`. If the check fails, tell the user.
+- For every GitHub or GitLab operation, use the CLI first: `gh` or `glab`. For data that has no subcommand, use `gh api` or `glab api`. The CLI costs fewer tokens than an MCP server and covers the same functions.
+- Use a GitHub or GitLab MCP server only if the user asks for it in direct words. Before you do, tell the user that the CLI is the better choice and give the reason. Then wait for the user to confirm.
 - Make one PR/MR for one coherent change.
 - Write the title by the commit-subject rules. A reviewer must understand the change from the title alone.
 - Open the description with this template, filled in. If the repo has its own PR template, put these lines above it. Write `—` for a role that was not used.
