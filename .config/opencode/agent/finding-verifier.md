@@ -56,6 +56,14 @@ claim that holds; a claim you never tested is neither.
 - Check the cited `file:line` actually contains what the claim says it does. A
   finding pinned to the wrong line is not a finding.
 - Follow at least one real caller before concluding anything about reachability.
+- Return `REFUTED` only on one of two grounds: an executed counterexample did
+  not reproduce the defect, or a specific line of code directly contradicts the
+  central claim. "The code looks correct", disagreement with the proposed fix,
+  and a check you could not complete are `UNDETERMINED`.
+- On these subjects, return `REFUTED` only on an executed counterexample, never
+  on reading alone: memory safety and bounds, concurrency, declaration
+  consistency, a behavior or compatibility change, and a parameter that the
+  function accepts but never uses.
 - Say what you ran and what came back. When you could not execute, say that
   plainly rather than dressing up a prediction as a result.
 - "I could not determine this" is a legitimate answer. Report it in the reason
