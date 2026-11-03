@@ -353,6 +353,7 @@ class World:
     self.claude_md = root / ".claude/CLAUDE.md"
     self.agents_md = root / ".dsh/AGENTS.md"
     self.hooks_config = root / ".claude/hooks/dsh-hooks.json"
+    self.backup_dir = root / "backups"
     self.agents.mkdir()
     self.patch.write_text(PATCH, encoding="utf-8")
     self.set_catalog(CATALOG)
@@ -410,15 +411,17 @@ class World:
       "--claude-md", str(self.claude_md), "--agents-md", str(self.agents_md),
       "--claude-skills", str(self.claude_skills), "--dsh-skills-local", str(self.local_skills),
       "--skills-farm", str(self.farm), "--hooks-config", str(self.hooks_config),
+      "--backup-dir", str(self.backup_dir),  # never the default: it is the real directory
     ]
     return gen_dsh.main(argv, app_running=app_running)
 
   def backups(self) -> list[Path]:
-    return sorted(self.root.glob("cordis.patch.yml.bak-*"))
+    return sorted(self.backup_dir.glob("cordis.patch.yml.bak-*"))
 
   def assert_untouched(self, before: bytes) -> None:
     assert self.patch.read_bytes() == before
     assert list(self.root.glob("cordis.patch.yml*")) == [self.patch]  # no backup, no temp file
+    assert not self.backup_dir.exists()
     assert not self.farm.exists()  # and none of the other outputs
     assert not self.agents_md.exists()
 
@@ -1238,13 +1241,13 @@ def test_instructions_file_is_claude_md_with_the_imports_expanded_and_mode_600(
 
   assert world.agents_md.read_text(encoding="utf-8") == AGENTS_MD
   assert stat.S_IMODE(world.agents_md.stat().st_mode) == 0o600
-  assert list(world.agents_md.parent.glob("AGENTS.md.*")) == []  # a new file: nothing to back up
+  assert list(world.backup_dir.glob("AGENTS.md.*")) == [] and list(world.agents_md.parent.glob("AGENTS.md.*")) == []  # a new file: nothing to back up
 
   assert world.run("--write") == 0
 
   assert "Instructions file is already up to date" in capsys.readouterr().out
   assert world.agents_md.read_text(encoding="utf-8") == AGENTS_MD
-  assert list(world.agents_md.parent.glob("AGENTS.md.*")) == []
+  assert list(world.backup_dir.glob("AGENTS.md.*")) == [] and list(world.agents_md.parent.glob("AGENTS.md.*")) == []
 
 
 def test_imports_are_one_level_and_a_relative_path_starts_at_the_claude_md_dir(world: World) -> None:
@@ -1301,7 +1304,7 @@ def test_changed_instructions_file_is_backed_up_with_mode_600_and_replaced_with_
 
   assert world.run("--write") == 0
 
-  [backup] = world.agents_md.parent.glob("AGENTS.md.bak-*")
+  [backup] = world.backup_dir.glob("AGENTS.md.bak-*")
   assert backup.read_text(encoding="utf-8") == "old text\n"
   assert stat.S_IMODE(backup.stat().st_mode) == 0o600
   assert world.agents_md.read_text(encoding="utf-8") == AGENTS_MD
@@ -1342,7 +1345,7 @@ def test_instructions_file_changed_after_planning_is_not_overwritten(
 
   assert "changed after it was read" in capsys.readouterr().err
   assert world.agents_md.read_text(encoding="utf-8") == "saved by somebody else\n"
-  assert list(world.agents_md.parent.glob("AGENTS.md.*")) == []  # no backup of a stale text, no temp file
+  assert list(world.backup_dir.glob("AGENTS.md.*")) == [] and list(world.agents_md.parent.glob("AGENTS.md.*")) == []  # no backup of a stale text, no temp file
 
 
 @pytest.mark.parametrize("name", AGENTS)
@@ -1722,3 +1725,65 @@ def test_group_targeted_insert_checks_nested_presets_with_effective_group_switch
   else:
     assert "active nested Agent Preset" in capsys.readouterr().err
     world.assert_untouched(before)
+
+
+def test_backups_go_to_the_backup_dir_and_none_is_left_beside_the_files(world: World) -> None:
+  world.agents_md.write_text("old text\n", encoding="utf-8")
+
+  assert world.run("--write") == 0  # the backup dir does not exist yet: it is created
+
+  assert sorted(p.name.split(".bak-")[0] for p in world.backup_dir.iterdir()) == ["AGENTS.md", "cordis.patch.yml"]
+  assert list(world.root.glob("*.bak-*")) == [] and list(world.agents_md.parent.glob("*.bak-*")) == []
+
+
+def test_existing_backup_dir_keeps_its_mode(world: World) -> None:
+  world.backup_dir.mkdir(mode=0o755)
+  world.backup_dir.chmod(0o755)
+
+  assert world.run("--write") == 0
+
+  assert stat.S_IMODE(world.backup_dir.stat().st_mode) == 0o755
+  assert len(world.backups()) == 1
+
+
+def test_backup_dir_that_is_a_file_stops_before_replacing_anything(world: World) -> None:
+  world.backup_dir.write_text("not a dir", encoding="utf-8")
+  before = world.patch.read_bytes()
+
+  assert world.run("--write") == 1
+
+  assert world.patch.read_bytes() == before
+  assert list(world.root.glob("cordis.patch.yml.*.tmp")) == []
+
+
+def test_same_name_from_two_dirs_in_one_second_is_refused_not_overwritten(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+  class FixedClock(datetime):
+    @classmethod
+    def now(cls, tz: tzinfo | None = None) -> Self:
+      return cls(2026, 1, 1, tzinfo=tz)
+
+  monkeypatch.setattr(gen_dsh, "datetime", FixedClock)
+  other = world.root / "other"
+  other.mkdir()
+  first, second = world.root / "AGENTS.md", other / "AGENTS.md"
+  first.write_bytes(b"one")
+  second.write_bytes(b"two")
+
+  gen_dsh.replace_file(first, b"one", b"new1", world.backup_dir)
+  with pytest.raises(FileExistsError):
+    gen_dsh.replace_file(second, b"two", b"new2", world.backup_dir)
+
+  assert second.read_bytes() == b"two"  # refused before the replace
+  [backup] = world.backup_dir.iterdir()
+  assert backup.read_bytes() == b"one"
+
+
+def test_backup_dir_defaults_to_the_harness_backups_dir(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+  seen: list[Path] = []
+  real = gen_dsh.build_plan
+  monkeypatch.setattr(gen_dsh, "build_plan", lambda paths: seen.append(paths.backup_dir) or real(paths))
+
+  gen_dsh.main(["--dry-run", "--patch-file", str(world.patch), "--asar", str(world.asar)])  # HOME is the temp root
+
+  assert seen == [Path("~/.harness-backups").expanduser()]
+  assert not seen[0].exists()

@@ -28,7 +28,8 @@
 ## Environment
 - Search with `rg`.
 - Python: use `uv` (`uv run`, `uv add`, `uv venv`) unless the project already uses another tool (Poetry, conda, pip with `requirements.txt`).
-- Scratch files go to `$TMPDIR`, never the project tree. Before mass edits to harness configs, back them up to `~/.harness-backups/`.
+- Scratch files go to `$TMPDIR`, never the project tree. Before mass edits to harness configs, make a backup.
+- Put every backup copy in `~/.harness-backups/`, never next to the original file. Make the copy with `cp` without `-p`, so that its modification time is the backup time. Rotation deletes entries older than 14 days (`python3 ~/.claude/tools/rotate-backups.py`; without `--apply` it only lists).
 
 ## Actions and consequences
 - Before any destructive or hard-to-reverse action (delete, overwrite, force-push, deploy, mass edits, schema or data changes, anything outward-facing), stop and confirm with me first.

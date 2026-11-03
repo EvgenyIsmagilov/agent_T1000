@@ -37,7 +37,7 @@ scalar and every comment is hidden.
 
 Usage: uv run gen_dsh.py [--dry-run | --write] [--patch-file P] [--asar P] [--agents-dir P]
          [--claude-md P] [--agents-md P] [--claude-skills P] [--dsh-skills-local P] [--skills-farm P]
-         [--hooks-config P]
+         [--hooks-config P] [--backup-dir P]
 """
 import argparse
 import copy
@@ -184,6 +184,7 @@ class Paths:
   local_skills: Path
   farm: Path
   hooks_config: Path
+  backup_dir: Path  # сюда уходят копии заменяемых файлов, не рядом с ними
 
 
 @dataclass(frozen=True)
@@ -1344,8 +1345,8 @@ def require_app_stopped(app_running: Callable[[], bool]) -> None:
     raise GeneratorError(f"{APP_PROCESS} is running and rewrites the patch file itself: quit it first")
 
 
-def replace_file(path: Path, old: bytes | None, new: bytes, mode: int | None = None) -> Path | None:
-  """Back the old file up (mode 600), then replace it atomically; returns the backup, None if there was no file.
+def replace_file(path: Path, old: bytes | None, new: bytes, backup_dir: Path, mode: int | None = None) -> Path | None:
+  """Back the old file up into `backup_dir` (mode 600), then replace it atomically; returns the backup, None if there was no file.
 
   `mode` is the new file's mode, by default the old file's. Replaces nothing if the file is no longer
   byte for byte what the plan was built from (still absent, when `old` is None)."""
@@ -1360,7 +1361,8 @@ def replace_file(path: Path, old: bytes | None, new: bytes, mode: int | None = N
   backup = None
   if old is not None:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    backup = path.with_name(f"{path.name}.bak-{stamp}")
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup = backup_dir / f"{path.name}.bak-{stamp}"  # O_EXCL: тот же файл в ту же секунду не затирается, а отказывает до замены
     fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "wb") as f:
       os.fchmod(f.fileno(), 0o600)
@@ -1396,14 +1398,14 @@ def write_outputs(plan: Plan, paths: Paths, app_running: Callable[[], bool]) -> 
     print("\nPatch file is already up to date; nothing written.")
   else:
     old = plan.old_text.encode("utf-8")
-    backup = attempt(paths.patch_file, lambda: replace_file(paths.patch_file, old, new_text.encode("utf-8")))
+    backup = attempt(paths.patch_file, lambda: replace_file(paths.patch_file, old, new_text.encode("utf-8"), paths.backup_dir))
     print(f"\nBackup: {backup}\nWritten: {paths.patch_file}")
   if instructions.state == "unchanged":
     print("Instructions file is already up to date; nothing written.")
   else:
     def write_instructions() -> Path | None:
       instructions.path.parent.mkdir(parents=True, exist_ok=True)
-      return replace_file(instructions.path, instructions.old, instructions.new, PRIVATE_MODE)
+      return replace_file(instructions.path, instructions.old, instructions.new, paths.backup_dir, PRIVATE_MODE)
 
     backup = attempt(instructions.path, write_instructions)
     print(f"Backup: {backup}\nWritten: {instructions.path}" if backup else f"Written: {instructions.path}")
@@ -1436,6 +1438,7 @@ def main(
   parser.add_argument("--dsh-skills-local", dest="local_skills", type=Path, default=home / ".dsh/skills-local")
   parser.add_argument("--skills-farm", dest="farm", type=Path, default=home / ".dsh/skills-shared")
   parser.add_argument("--hooks-config", type=Path, default=home / ".claude/hooks/dsh-hooks.json")
+  parser.add_argument("--backup-dir", type=Path, default=home / ".harness-backups")
   args = parser.parse_args(argv)
   paths = Paths(**{f.name: getattr(args, f.name) for f in fields(Paths)})  # dest каждого флага = поле Paths
   try:
