@@ -11,7 +11,7 @@ Apply these standards when administering a Linux server (home server or VPS). Co
 
 1. Inspect the target first: distro, init system, what services already run, existing configs. Never assume the environment.
 2. Follow the machine's existing conventions and configs — the server always wins over defaults here.
-3. Prefer the smallest reversible change. Back up any config before editing it (keep a timestamped `.bak`).
+3. Prefer the smallest reversible change. Before you edit a config, copy it with `cp -a` to `/var/backups/config/`. Name the copy `<service>.<file>.<YYYYMMDD-HHMMSS>.bak`, for example `nginx.nginx.conf.20261103-142530.bak`. Create the directory with mode 700 if it is missing. Never leave the copy next to the original.
 4. Make changes idempotent and safe to re-run.
 5. State what changed, how to verify it, and how to roll it back.
 
