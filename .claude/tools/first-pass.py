@@ -69,6 +69,7 @@ def tier_of(rec):
 
     opus не пишет код с введения трёх тиров — старые строки с opus помечаются
     отдельно, а не как T2/T3, чтобы не путать легаси-роутинг с текущим.
+    fable, как и opus, не пишет код, поэтому его строки получают отдельную метку.
     """
     if rec.get("tier"):
         return rec["tier"]
@@ -80,6 +81,8 @@ def tier_of(rec):
         return "T3" if effort == "max" else "T2"
     if "opus" in model:
         return "?(legacy-opus)"
+    if "fable" in model:
+        return "?(fable)"
     return "?"
 
 

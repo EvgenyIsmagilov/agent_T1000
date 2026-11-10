@@ -2,9 +2,7 @@
 description: "Fast, read-only internet and documentation researcher. Use for targeted factual lookups, current facts, API options, library behavior, and concise source-backed answers. Do not use for implementation or file changes."
 mode: subagent
 steps: 12
-model: openrouter/~deepseek/deepseek-v4.1-flash-latest
-options:
-  reasoningEffort: low
+model: dspark/deepseek-v4-flash
 permission:
   edit: deny
 ---

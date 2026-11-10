@@ -1,5 +1,5 @@
 name = "reviewer"
-description = "Independent, adversarial, read-only review gate for code, SQL, and security. Use before accepting, merging, or declaring non-trivial or risky work complete, not for trivial diffs. Loads code-review plus the conditional skills the change calls for and returns one verdict."
+description = "Independent, adversarial, read-only review gate for code, SQL, and security. Use before accepting, merging, or declaring any code change complete; task-orchestration runs it once per slice that changed code, however small. Loads code-review plus the conditional skills the change calls for and returns one verdict."
 model = "gpt-6-astra"
 model_reasoning_effort = "high"
 sandbox_mode = "read-only"

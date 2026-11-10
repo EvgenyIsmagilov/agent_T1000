@@ -27,7 +27,9 @@ from typing import TypedDict
 #       model message as several records — thinking/text/tool_use — each
 #       carrying the same id and usage); rows below 5 double-count both by
 #       roughly the number of content blocks per turn.
-SCHEMA = 5
+#   6 — report read from the SubagentHandback tool call in the transcript
+#       (`report_source`); the pre-handback stop event is skipped.
+SCHEMA = 6
 
 DEFAULT_LOG = Path.home() / ".claude" / "logs" / "subagent-runs.jsonl"
 DEFAULT_SKIPPED_LOG = Path.home() / ".claude" / "logs" / "subagent-runs-skipped.jsonl"
@@ -154,6 +156,8 @@ def log_skipped(data, reason):
         "schema": SCHEMA,
         "agent_type": data.get("agent_type"),
         "reason": reason,
+        "agent_id": agent_id(data),
+        "slice_id": brief_identity(data.get("agent_transcript_path"))["slice_id"],
         "report_chars": len(report) if isinstance(report, str) else 0,
         "cwd": data.get("cwd"),
     }
@@ -455,21 +459,56 @@ def validate_report(
     return verdict, metadata, "valid" if not reasons else "invalid", reasons
 
 
-def transcript_stats_with_retry(path, attempts=6, delay=0.1):
+def transcript_stats_with_retry(path: str | None, attempts: int = 6, delay: float = 0.1) -> dict:
     """Read the transcript, waiting for its final turn to be flushed.
 
     The hook fires before the subagent's last turn reaches the file, so a
     first read typically ends on `tool_use` and misses the closing message.
     Retry only while that tell-tale is there: normally one extra read, at
-    most ~0.5s, well inside the hook's 10s timeout.
+    most ~0.5s, well inside the hook's 10s timeout. The same goes for the
+    handback record: while the protocol is active and no handback is found
+    yet, it may simply not be flushed.
     """
     stats = transcript_stats(path)
     for _ in range(attempts - 1):
-        if stats.get("stop_reason") != "tool_use":
+        if stats.get("handback") is not None:
+            break
+        if stats.get("stop_reason") != "tool_use" and not stats.get("handback_protocol"):
             break
         time.sleep(delay)
         stats = transcript_stats(path)
     return stats
+
+
+def note_handback(rec: dict, message: dict, stats: dict) -> None:
+    """Record the handback reminder and the last SubagentHandback message."""
+    if rec.get("type") not in ("user", "assistant"):
+        return  # api-request-blob and similar replay earlier messages
+    content = message.get("content")
+    if message.get("role") == "user" and not (
+        isinstance(content, list)
+        and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+    ):
+        # A new instruction: the handback belongs to an earlier run.
+        stats["handback"] = None
+    if message.get("role") == "user" and rec.get("isMeta"):
+        blocks = content if isinstance(content, list) else []
+        text = content if isinstance(content, str) else "".join(
+            b.get("text", "") for b in blocks
+            if isinstance(b, dict) and isinstance(b.get("text"), str)
+        )
+        if "SubagentHandback" in text:
+            stats["handback_protocol"] = True
+    elif message.get("role") == "assistant" and isinstance(content, list):
+        for block in content:
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "tool_use"
+                and block.get("name") == "SubagentHandback"
+                and isinstance(block.get("input"), dict)
+                and isinstance(block["input"].get("message"), str)
+            ):
+                stats["handback"] = block["input"]["message"]
 
 
 def transcript_stats(path):
@@ -491,6 +530,11 @@ def transcript_stats(path):
         # no stop_reason. `max_tokens` here means the agent was cut off.
         "model": None,
         "stop_reason": None,
+        # Report delivered via the SubagentHandback tool (Claude Code 2.1.310+):
+        # last such tool_use message, and whether the harness reminder about it
+        # is in the transcript (a meta user record, not the delegation brief).
+        "handback": None,
+        "handback_protocol": False,
     }
     if not path or not Path(path).is_file():
         return dict.fromkeys(stats, None)
@@ -503,6 +547,9 @@ def transcript_stats(path):
     # turn, so usage is kept per id and only the last record for that id is
     # counted. Records without an id (older transcripts) count individually,
     # same as before.
+    # A handback belongs to this run until a new instruction (a user record
+    # without tool_result) arrives: a continued agent (SendMessage) appends to
+    # the same file. Text after the handback's tool_result (CLI 2.1.284) is fine.
     usage_by_id: dict[str, dict] = {}
     unnamed_usages: list[dict] = []
     with Path(path).open() as f:
@@ -519,6 +566,8 @@ def transcript_stats(path):
                 first = first or ts
                 last = ts
             message = rec.get("message")
+            if isinstance(message, dict):
+                note_handback(rec, message, stats)
             usage = message.get("usage") if isinstance(message, dict) else None
             if not usage:
                 continue
@@ -564,13 +613,23 @@ def main():
         log_skipped(data, reason)
         return
 
-    report_present = "last_assistant_message" in data
-    report = data.get("last_assistant_message")
+    stats = transcript_stats_with_retry(data.get("agent_transcript_path"))
+    handback = stats.pop("handback")
+    protocol = stats.pop("handback_protocol")
+    if handback is not None:
+        report_source, report = "handback", handback
+    elif "last_assistant_message" in data:
+        if protocol:
+            # Pre-handback stop: the run row is written by the later event.
+            log_skipped(data, "awaiting_handback")
+            return
+        report_source, report = "last_assistant_message", data["last_assistant_message"]
+    else:
+        report_source, report = "none", None
     verdict, metadata, contract_status, contract_reasons = validate_report(
-        data.get("agent_type"), report_present, report
+        data.get("agent_type"), report_source != "none", report
     )
 
-    stats = transcript_stats_with_retry(data.get("agent_transcript_path"))
     identity = brief_identity(data.get("agent_transcript_path"))
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -586,6 +645,7 @@ def main():
         "slice_id": identity["slice_id"],
         "tier": identity["tier"],
         "previous_failure_class": identity["previous_failure_class"],
+        "report_source": report_source,
         "report_metadata_status": metadata,
         "contract_status": contract_status,
         "contract_reasons": contract_reasons,

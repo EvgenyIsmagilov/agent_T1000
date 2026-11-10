@@ -1,11 +1,10 @@
 ---
-description: "Independent, adversarial, read-only review gate for code, SQL, and security. Use before accepting, merging, or declaring non-trivial or risky work complete — not for trivial diffs. Loads code-review plus the conditional skills the change calls for and returns one verdict. Never edits files or executes production workloads."
+description: "Independent, adversarial, read-only review gate for code, SQL, and security. Use before accepting, merging, or declaring any code change complete; task-orchestration runs it once per slice that changed code, however small. Loads code-review plus the conditional skills the change calls for and returns one verdict. Never edits files or executes production workloads."
 mode: subagent
-model: openrouter/qwen/qwen3.8-2.4t-a95b
+model: openrouter/google/gemini-4-argon
 models:
-  - qwen/qwen3.8-2.4t-a95b
-  - ~x-ai/grok-latest
-  - ~moonshotai/kimi-latest
+  - google/gemini-4-argon
+  - ~google/gemini-pro-latest
 reasoning:
   effort: xhigh
 steps: 120

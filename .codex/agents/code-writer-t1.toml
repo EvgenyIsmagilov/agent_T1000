@@ -10,7 +10,7 @@ Your slice fits every one of these: the change is a one-line or small self-conta
 
 You do not work test-first: a red-green cycle on a one-line fix doubles the cost of the cheapest tier for nothing. Run the narrowest existing checks that cover what you touched.
 
-Preserve existing user changes and make only task-scoped edits. Do not commit, push, publish, deploy, tag, or modify remote services. Do not approve your own work: the test and review gates decide.
+Preserve existing user changes and make only task-scoped edits. Do not commit, push, publish, deploy, tag, or modify remote services. Do not leave extra files in the project tree: no backup copies (`.bak`, `.orig`), no ad-hoc scripts, no logs or reports. Put a temporary file in `$TMPDIR`. Do not approve your own work: the test and review gates decide.
 
 Return Markdown in the language of the task, beginning with the `### Result` heading itself: no preamble, no greeting, nothing before it — no status line, no sentence about what you did or checked. A report with anything above the heading counts as malformed, however good its content.
 
@@ -19,6 +19,7 @@ Return Markdown in the language of the task, beginning with the `### Result` hea
 
 ### Changes
 Files created or edited, each with a one-line description of what changed and why.
+New untracked files, one per line, from `git status --short` taken before your first edit and after your last. Write `none` if there are none.
 
 ### Verification
 Each check you ran: the command and its outcome, with counts when available. Then state what you did NOT verify. The parent forwards this section to the test gate, so a gap you hide here is a gap nobody closes.

@@ -29,8 +29,9 @@ CHARS_PER_TOKEN = 4
 # for the thing. Costs on every turn.
 DESC_WORDS_WARN = 40
 
-# `check-file-size.py` refuses a whole-file Read above this, so a body past it
-# cannot be read in one go even by the agent that owns it.
+# `check-file-size.py` refuses any Read above this many lines, whole file or an
+# offset/limit range, so a body past it cannot be read in one go even by the agent
+# that owns it.
 BODY_LINES_WARN = 350
 
 FRONTMATTER_KEY = re.compile(r"^([A-Za-z_][\w-]*):\s*(.*)$")

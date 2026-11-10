@@ -22,7 +22,11 @@ OpenCode-specific pieces of the same agent setup as `../../.claude` and `../../.
   per-event scripts). Drop it into `~/.config/opencode/plugins/` — files there
   load automatically at startup, no config entry needed.
 - `tools/` — read-only reporting scripts (`agent-stats.py`, `context-budget.py`),
-  mirroring `../../.claude/tools`.
+  mirroring `../../.claude/tools`, and `pr-review.py` with its tests (see
+  [PR review](#pr-review) below). `pr-review.py` is not read-only: with `--post` it
+  writes comments and reviews to GitHub, and with `--merge` it can merge the PR.
+- `review/` — the review instructions (`pr-review-instructions.md`) and the system
+  prompt of the `pr-reviewer` agent (`pr-reviewer.md`) that `pr-review.py` uses.
 
 ## What's *not* here, on purpose
 
@@ -68,6 +72,42 @@ transfer as-is. The pieces that matter for orchestration are these two
 the environment (same convention as `../../.claude/hooks/trino-guardrail.py`'s
 `TRINO_GUARDRAIL_PROJECT_ROOT`) — set it to your own project checkout, or
 leave it unset to deny Trino MCP calls everywhere.
+
+## PR review
+
+`tools/pr-review.py` reviews a GitHub pull request with a model run through
+`opencode` and, on request, posts the result. Settings come from the environment:
+
+- `PR_REVIEW_BOT_LOGIN` (required) — the `gh` account the script writes as. The
+  script stops with exit code 2 if the active `gh` identity differs.
+- `OPENROUTER_API_KEY` (required) — passed to the model process.
+- `PR_REVIEW_PERSONA_MARKERS` (optional) — path to a private file with one regular
+  expression per line. A model answer that matches one is rejected. If the variable is
+  unset or the file is unreadable, the check is skipped and a note goes to stderr.
+  Keep that file out of the repository.
+
+The script builds the run config from your `opencode.jsonc` (default
+`~/.config/opencode/opencode.jsonc`), which must define a `pr-reviewer` agent. Add a
+block like this one to your own file; the `prompt` path must be absolute:
+
+```jsonc
+"pr-reviewer": {
+  "mode": "primary",
+  "model": "openrouter/<your-model>",
+  "steps": 50, // keep in sync with the step count named in review/pr-reviewer.md
+  "prompt": "{file:/absolute/path/to/review/pr-reviewer.md}",
+  "permission": {
+    "*": "deny",
+    "read": "allow",
+    "grep": "allow",
+    "glob": "allow",
+    "external_directory": {"*": "deny"}
+  }
+}
+```
+
+Without `--post` the script only prints the verdict. Tests: `python3 tools/test_pr_review.py`
+(seven tests that read the real `opencode.jsonc` are skipped when it is absent).
 
 ## Known gaps
 

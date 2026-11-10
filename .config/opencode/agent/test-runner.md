@@ -2,9 +2,10 @@
 description: "Runs existing tests, linters, type checks, and build checks, then reports only actionable failures. Use proactively after code changes, before completion, or when asked to validate the repository. Never edits code, installs packages, updates snapshots, or fixes failures."
 mode: subagent
 steps: 20
-model: openrouter/~deepseek/deepseek-v4.1-flash-latest
-options:
-  reasoningEffort: low
+model: dspark/deepseek-v4-flash
+models:
+  - dspark/deepseek-v4-flash
+  - z-ai/glm-5.3-flash
 tools:
   webfetch: false
 permission:
@@ -26,7 +27,7 @@ Your job is to run the smallest appropriate set of existing project checks and r
 - Do not collect unrelated repository context.
 - A hook denies whole-file `read` above 350 lines. Read such a file with `offset`/`limit` on the part you need (a script block, a failing test) — you have no delegation tool, so there is nothing to hand the read to.
 
-Some test tools may create temporary caches or reports automatically. Disable such output when practical, but do not perform cleanup that could delete user files.
+Some test tools create caches or reports automatically. When the tool allows it, turn that output off or send it to `$TMPDIR`, for example `pytest -p no:cacheprovider --basetemp="$TMPDIR/pytest"`. Do not perform cleanup that could delete user files.
 
 ## Command selection
 

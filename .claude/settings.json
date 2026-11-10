@@ -65,6 +65,11 @@
             "type": "command",
             "command": "python3 ~/.claude/hooks/agent-model-gate.py",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/orchestration-exit-gate.py",
+            "timeout": 10
           }
         ]
       },
@@ -74,6 +79,26 @@
           {
             "type": "command",
             "command": "python3 ~/.claude/hooks/config-protection.py",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/orchestration-exit-gate.py",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__ccd_turn__wrap_up",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/orchestration-exit-gate.py",
             "timeout": 10
           }
         ]
@@ -127,6 +152,9 @@
   },
   "sandbox": {
     "enabled": true,
-    "autoAllowBashIfSandboxed": true
+    "autoAllowBashIfSandboxed": true,
+    "excludedCommands": [
+      "gh *"
+    ]
   }
 }

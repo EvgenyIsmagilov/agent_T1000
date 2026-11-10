@@ -15,6 +15,7 @@ from types import ModuleType
 CLAUDE_DIR = Path(__file__).resolve().parent.parent
 HOOK_PATH = CLAUDE_DIR / "hooks" / "log-subagent.py"
 STATS_PATH = CLAUDE_DIR / "tools" / "agent-stats.py"
+FIRST_PASS_PATH = CLAUDE_DIR / "tools" / "first-pass.py"
 FIXTURES_DIR = CLAUDE_DIR / "tools" / "fixtures" / "reports"
 
 
@@ -26,7 +27,22 @@ def load_hook() -> ModuleType:
     return module
 
 
+def load_first_pass() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("first_pass", FIRST_PASS_PATH)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    # Без этого импорт пишет байт-код в tools/__pycache__, даже если запуск идёт без -B.
+    previous = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous
+    return module
+
+
 HOOK = load_hook()
+FIRST_PASS = load_first_pass()
 
 
 def report(heading: str, status: str, sections: list[str]) -> str:
@@ -419,6 +435,162 @@ class HookAndStatsTests(unittest.TestCase):
             self.assertIn("пустой отчёт", result.stdout)
             self.assertIn("некорректный формат", result.stdout)
             self.assertNotIn("без вердикта", result.stdout)
+
+
+class HandbackHookTests(unittest.TestCase):
+    REMINDER = {
+        "type": "user", "isMeta": True,
+        "message": {"role": "user", "content": "Deliver the report by calling SubagentHandback."},
+    }
+    BRIEF = {"type": "user", "message": {"role": "user", "content": "brief: mention SubagentHandback"}}
+    BASH = {
+        "type": "assistant",
+        "message": {"id": "m1", "role": "assistant", "model": "claude-sonnet-5", "stop_reason": "tool_use",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                    "content": [{"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}]},
+    }
+
+    @staticmethod
+    def handback(text):
+        return {
+            "type": "assistant",
+            "message": {"id": "m2", "role": "assistant", "model": "claude-sonnet-5", "stop_reason": "tool_use",
+                        "usage": {"input_tokens": 1, "output_tokens": 1},
+                        "content": [{"type": "tool_use", "name": "SubagentHandback", "input": {"message": text}}]},
+        }
+
+    def run_hook(self, directory, records, extra=None):
+        transcript = Path(directory) / "agent.jsonl"
+        transcript.write_text("".join(json.dumps(r) + "\n" for r in records))
+        payload = {"hook_event_name": "SubagentStop", "agent_type": "code-writer-t2",
+                   "agent_transcript_path": str(transcript)} | (extra or {})
+        env = os.environ | {"CLAUDE_SUBAGENT_LOG": str(Path(directory) / "runs.jsonl"),
+                            "CLAUDE_SUBAGENT_SKIPPED_LOG": str(Path(directory) / "skipped.jsonl")}
+        subprocess.run([sys.executable, "-B", str(HOOK_PATH)], input=json.dumps(payload), text=True,
+                       capture_output=True, env=env, check=True)
+
+    @staticmethod
+    def rows(directory, name):
+        path = Path(directory) / name
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def test_handback_report_is_read_from_transcript(self) -> None:
+        text = report("Result", "DONE", ["Changes", "Verification"])
+        with tempfile.TemporaryDirectory() as d:
+            self.run_hook(d, [self.BRIEF, self.REMINDER, self.BASH, self.handback(text)])
+            (row,) = self.rows(d, "runs.jsonl")
+            self.assertEqual(row["report_source"], "handback")
+            self.assertEqual(row["report_metadata_status"], "present")
+            self.assertEqual(row["contract_status"], "valid")
+            self.assertEqual(row["verdict"], "DONE")
+            self.assertEqual(row["report_chars"], len(text))
+            self.assertEqual(row["schema"], 6)
+            self.assertNotIn(text, json.dumps(row))
+
+    def test_pre_handback_stop_is_skipped_then_handback_logged_once(self) -> None:
+        text = report("Result", "DONE", ["Changes", "Verification"])
+        with tempfile.TemporaryDirectory() as d:
+            self.run_hook(d, [self.BRIEF, self.REMINDER, self.BASH], {"last_assistant_message": "plain text"})
+            self.assertEqual(self.rows(d, "runs.jsonl"), [])
+            (skipped,) = self.rows(d, "skipped.jsonl")
+            self.assertEqual(skipped["reason"], "awaiting_handback")
+            self.run_hook(d, [self.BRIEF, self.REMINDER, self.BASH, self.handback(text)])
+            (row,) = self.rows(d, "runs.jsonl")
+            self.assertEqual(row["report_source"], "handback")
+            self.assertEqual(skipped["agent_id"], row["agent_id"])
+
+    def test_continued_agent_ignores_previous_handback(self) -> None:
+        old = report("Result", "BLOCKED", ["Changes", "Verification"])
+        new = report("Result", "DONE", ["Changes", "Verification"]) + "\nextra"
+        meta = {"type": "user", "isMeta": True,
+                "message": {"role": "user", "content": [{"type": "text", "text": "continue"}]}}
+        text_end = {"type": "assistant",
+                    "message": {"id": "m3", "role": "assistant", "model": "claude-sonnet-5",
+                                "stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 1},
+                                "content": [{"type": "text", "text": "done"}]}}
+        enforce = {"type": "user", "isMeta": True,
+                   "message": {"role": "user", "content": "[handback-send-enforce] use SubagentHandback"}}
+        new_handback = self.handback(new)
+        new_handback["message"]["id"] = "m4"
+        base = [self.BRIEF, self.REMINDER, self.BASH, self.handback(old), meta, text_end]
+        with tempfile.TemporaryDirectory() as d:
+            self.run_hook(d, base, {"last_assistant_message": "done"})
+            self.assertEqual(self.rows(d, "runs.jsonl"), [])
+            (skipped,) = self.rows(d, "skipped.jsonl")
+            self.assertEqual(skipped["reason"], "awaiting_handback")
+            self.run_hook(d, base + [enforce, new_handback], {"last_assistant_message": "done"})
+            (row,) = self.rows(d, "runs.jsonl")
+            self.assertEqual(row["report_source"], "handback")
+            self.assertEqual(row["report_chars"], len(new))
+
+    def test_api_request_blob_does_not_resurrect_handback(self) -> None:
+        old = self.handback(report("Result", "BLOCKED", ["Changes", "Verification"]))
+        meta = {"type": "user", "isMeta": True,
+                "message": {"role": "user", "content": "continue"}}
+        blob = {"type": "api-request-blob", "message": old["message"]}
+        text_end = {"type": "assistant",
+                    "message": {"id": "m3", "role": "assistant", "model": "claude-sonnet-5",
+                                "stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 1},
+                                "content": [{"type": "text", "text": "done"}]}}
+        records = [self.BRIEF, self.REMINDER, self.BASH, old, meta, blob, text_end]
+        with tempfile.TemporaryDirectory() as d:
+            self.run_hook(d, records, {"last_assistant_message": "done"})
+            self.assertEqual(self.rows(d, "runs.jsonl"), [])
+            (skipped,) = self.rows(d, "skipped.jsonl")
+            self.assertEqual(skipped["reason"], "awaiting_handback")
+
+    def test_trailing_text_after_handback_keeps_it(self) -> None:
+        text = report("Result", "DONE", ["Changes", "Verification"])
+        tool_result = {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}}
+        text_end = {"type": "assistant",
+                    "message": {"id": "m3", "role": "assistant", "model": "claude-sonnet-5",
+                                "stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 1},
+                                "content": [{"type": "text", "text": "done"}]}}
+        records = [self.BRIEF, self.REMINDER, self.BASH, self.handback(text), tool_result, text_end]
+        with tempfile.TemporaryDirectory() as d:
+            self.run_hook(d, records, {"last_assistant_message": "done"})
+            (row,) = self.rows(d, "runs.jsonl")
+            self.assertEqual(row["report_source"], "handback")
+            self.assertEqual(row["report_chars"], len(text))
+            self.assertEqual(self.rows(d, "skipped.jsonl"), [])
+
+    def test_non_list_meta_content_does_not_lose_row(self) -> None:
+        meta = {"type": "user", "isMeta": True, "message": {"role": "user", "content": 5}}
+        with tempfile.TemporaryDirectory() as d:
+            self.run_hook(d, [self.BRIEF, meta, self.BASH], {"last_assistant_message": "x"})
+            self.assertEqual(len(self.rows(d, "runs.jsonl")), 1)
+
+    def test_old_cli_uses_last_assistant_message(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            self.run_hook(d, [self.BRIEF, self.BASH],
+                          {"last_assistant_message": report("Result", "DONE", ["Changes", "Verification"])})
+            (row,) = self.rows(d, "runs.jsonl")
+            self.assertEqual(row["report_source"], "last_assistant_message")
+            self.assertEqual(row["contract_status"], "valid")
+
+    def test_no_report_anywhere(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            self.run_hook(d, [self.BRIEF, self.BASH])
+            (row,) = self.rows(d, "runs.jsonl")
+            self.assertEqual(row["report_source"], "none")
+            self.assertEqual(row["report_metadata_status"], "unavailable")
+
+
+class TierOfTests(unittest.TestCase):
+    def test_tier_of_prefers_explicit_tier_then_model_family(self) -> None:
+        cases = (
+            ({"tier": "T3", "model": "claude-haiku"}, "T3"),
+            ({"model": "claude-haiku"}, "T1"),
+            ({"model": "claude-sonnet", "effort": "max"}, "T3"),
+            ({"model": "claude-sonnet", "effort": "medium"}, "T2"),
+            ({"model": "claude-opus"}, "?(legacy-opus)"),
+            ({"model": "claude-fable"}, "?(fable)"),
+            ({"model": "unknown-model"}, "?"),
+        )
+        for rec, expected in cases:
+            with self.subTest(rec=rec):
+                self.assertEqual(FIRST_PASS.tier_of(rec), expected)
 
 
 if __name__ == "__main__":

@@ -12,8 +12,8 @@
 - Ask clarifying questions when the task is blocked by missing information.
 
 ## Workflow
-- Goal-driven execution: once the Definition of Done is set (see Prompt quality), sketch a brief step plan where each step names how you'll verify it, then loop until every criterion is confirmed.
-- For every task that changes source code or repository configuration, for other non-trivial multi-step work, and before any delegation to subagents, load the `task-orchestration` skill and follow it — ownership, delegation, test and review gates, and completion rules live there. Only a `code-writer` tier edits source code or repository configuration, never the main agent; instructions, docs, and harness configs are not code for this rule.
+- Goal-driven execution: once the Definition of Done is set (see Prompt quality), sketch a brief step plan where each step names how you'll verify it, then loop until every criterion is confirmed or a loop limit in `task-orchestration` stops the work.
+- For every task that changes source code or repository configuration, for other non-trivial multi-step work, and before any delegation to subagents, load the `task-orchestration` skill and follow it — ownership, delegation, test and review gates, and completion rules live there. Only a `code-writer` tier edits source code or repository configuration, never the main agent; instructions, docs, and harness configs are not code for this rule, but scripts in a harness directory (for example `hooks/*.py`, `tools/*.py`) are code.
 - For large-scale prototyping or planning of new work, load the `coding-task-planner` skill (`anthropic-skills:coding-task-planner` in Claude Code) first to turn the request into a concrete, repository-grounded task spec before implementing.
 - Once a plan exists for non-trivial work, stress-test it with me through the `grilling` skill before building. That is the default, not a step reserved for risky plans; skip it only when I already answered the same questions or ask you to skip.
 - Classify every code slice with `code-tier-assessment` and send it to `code-writer-t1`, `code-writer-t2` or `code-writer-t3`; T2 is the default and a slice with no named T1 or T3 trigger goes there. Do not bypass the `test-runner` and `reviewer` gates for a code-changing task.
@@ -21,7 +21,7 @@
 - For non-trivial or production Trino/analytical SQL, the single `reviewer` must load the complete `sql-review` and `sql` skills in addition to `code-review`; it also loads `airflow` for DAG or scheduling changes and `python` for embedded SQL. Verify each finding, fix the valid ones, then rerun the affected checks.
 - When a check fails and the cause is not obvious, spawn `bug-investigator` before editing code; never patch just the symptom (suppressing an error, adding a defensive check, retrying) without confirming why the failure actually occurs.
 - Never edit a linter, formatter or type-checker configuration to make a check pass — fix the code. In `pyproject.toml`, `setup.cfg` and `tox.ini` a dependency change is ordinary, a widened `ignore` list is not. If changing the config is genuinely the task, say so out loud.
-- Two attempts per code-writer tier before escalating one tier, and a hard ceiling of 9 code-writer runs on a single slice. If a check fails with the same error 2 times in a row: stop editing, revert the last change, widen the analysis, and form an alternative plan before resuming. At most 3 implementation-review cycles; stop earlier if two consecutive cycles make no measurable progress.
+- Two attempts per code-writer tier before escalating one tier, and a hard ceiling of 9 code-writer runs on a single slice. If a check fails with the same error 2 times in a row: stop editing and run the failure procedure in `task-orchestration` (Work loop step 8). Stop earlier if two consecutive cycles make no measurable progress.
 - Do not finish a task with failing checks, unresolved critical/high/medium review findings, disabled or weakened validation, undisclosed unverified assumptions, or leftover debugging artifacts.
 - When you change an agent, a shared skill, or this file, mirror the change in `~/.claude` (OpenCode reads `~/.claude/CLAUDE.md`), or the harnesses drift apart again; Claude-only skills are the exception. Check with `python3 ~/.claude/tools/harness-check.py` (0 problems expected).
 
@@ -30,6 +30,14 @@
 - Python: use `uv` (`uv run`, `uv add`, `uv venv`) unless the project already uses another tool (Poetry, conda, pip with `requirements.txt`).
 - Scratch files go to `$TMPDIR`, never the project tree. Before mass edits to harness configs, make a backup.
 - Put every backup copy in `~/.harness-backups/`, never next to the original file. Make the copy with `cp` without `-p`, so that its modification time is the backup time. Rotation deletes entries older than 14 days (`python3 ~/.claude/tools/rotate-backups.py`; without `--apply` it only lists).
+
+## GitHub identity for agents
+- Each agent writes to GitHub as its own bot. Never use the personal account for agent work.
+- Give each harness its own `GH_CONFIG_DIR` (for example `~/.config/gh-<harness>-bot`). Set the variable in that harness's own settings or env file.
+- A harness that starts from the desktop does not inherit shell variables. Put each agent variable in that app's own env file.
+- Tokens stay in the OS keychain. Never write a token into a file, a command, or chat.
+- If a bot has no valid token, the user runs `GH_CONFIG_DIR=<bot dir> gh auth login` in their own terminal. The agent does not run it.
+- A bot needs write access to each repository it works in. Check with `gh repo view <owner/repo> --json viewerPermission`.
 
 ## Actions and consequences
 - Before any destructive or hard-to-reverse action (delete, overwrite, force-push, deploy, mass edits, schema or data changes, anything outward-facing), stop and confirm with me first.
@@ -78,7 +86,7 @@ Write by the rules of ASD-STE100 Simplified Technical English. The writing rules
 ## Prompt quality
 
 Before acting:
-- If the prompt lacks a clear, testable Definition of Done, state what is missing and propose a minimal DoD. If safely inferable, state it and proceed.
+- If the prompt lacks a clear, testable Definition of Done, state what is missing and propose a minimal DoD. If safely inferable, state it. For work delegated through a task brief, wait for my confirmation first; otherwise proceed.
 - Flag vague, useless, redundant, harmful, or cargo-cult instructions (`think step by step`, `be very careful`, `production-ready`, etc.). Briefly explain why they add no measurable value and suggest a testable replacement.
 - Flag requirements that conflict with the goal or add pointless complexity.
 - Prefer verification (`tests`, `lint`, `typecheck`, repro) over confidence. State what remains unverified.

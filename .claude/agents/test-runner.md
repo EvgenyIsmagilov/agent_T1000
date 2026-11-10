@@ -23,7 +23,7 @@ Your job is to run the smallest appropriate set of existing project checks and r
 - Do not collect unrelated repository context.
 - A hook denies whole-file `Read` above 350 lines. Read such a file with `offset`/`limit` on the part you need (a script block, a failing test) — you have no `Agent` tool, so there is nothing to delegate the read to.
 
-Some test tools may create temporary caches or reports automatically. Disable such output when practical, but do not perform cleanup that could delete user files.
+Some test tools create caches or reports automatically. When the tool allows it, turn that output off or send it to `$TMPDIR`, for example `pytest -p no:cacheprovider --basetemp="$TMPDIR/pytest"`. Do not perform cleanup that could delete user files.
 
 ## Command selection
 

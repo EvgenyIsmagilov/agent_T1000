@@ -184,7 +184,7 @@ tmp=$(mktemp -u "${TMPDIR:-/tmp}/snapidx.XXXXXX") && idx=$(git rev-parse --git-p
 - You do every revert yourself — step 8, **Unusable and truncated returns** — and only after the run's snapshot exists. A revert restores a recorded state, it is not a code edit, and the snapshot is its undo path, so it needs no confirmation. Changes that `test-runner` made are the exception: report them, never revert them (step 6).
 - Restore: `git checkout refs/snapshots/<slice_id>/<n> -- .`. List: `git for-each-ref refs/snapshots/`. The ref keeps the commit alive through `reset --hard`, reflog expiry, and `gc --prune=now`.
 - Leave snapshots in place after the task; delete a slice's refs (`git update-ref -d`) only when the user asks.
-- Outside a git repository (for example `~/.claude` itself), copy the touched files with `cp` (without `-p`) into `~/My_Projects/claude/.harness-backups/<slice_id>-<n>/` instead, one directory per run, as `CLAUDE.md` requires for every backup.
+- Outside a git repository (for example `~/.claude` itself), copy the touched files with `cp` (without `-p`) into `~/.harness-backups/<slice_id>-<n>/` instead, one directory per run, as `CLAUDE.md` requires for every backup.
 
 ## Continuing an implementer
 

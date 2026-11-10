@@ -9,11 +9,13 @@ own input:
 
 * a built-in agent without its own model (`general-purpose`, `Explore`,
   `Plan`, `claude`) must name `model` explicitly;
-* `opus` is for `reviewer` and `magi-*` only, unless the most recent genuine
-  user message in the transcript mentions opus ("opus"/"опус"). Only records
-  the user typed count — never the Agent prompt, assistant text, tool results,
-  task notifications or messages from other sessions — so the agent cannot
-  approve itself.
+* `opus` and `fable` are for `reviewer` and `magi-*` only, unless the most
+  recent genuine user message in the transcript names the same family
+  ("opus"/"опус", "fable"/"фейбл"). Each family needs its own approval: a
+  message that names "opus" does not approve `fable`, and the reverse. Only
+  records the user typed count — never the Agent prompt, assistant text, tool
+  results, task notifications or messages from other sessions — so the agent
+  cannot approve itself.
 
 Fails open on every uncertainty — unreadable transcript, missing path, any
 exception. This is a budget guardrail, not a security boundary. Passing calls
@@ -36,7 +38,10 @@ SKILL_REF = "~/.claude/skills/task-orchestration/SKILL.md, раздел «Budget
 # means general-purpose.
 NO_OWN_MODEL_AGENTS = {"general-purpose", "Explore", "Plan", "claude"}
 
-OPUS_RE = re.compile(r"opus|опус", re.IGNORECASE)
+PREMIUM_RES = {
+    "opus": re.compile(r"opus|опус", re.IGNORECASE),
+    "fable": re.compile(r"fable|фейбл", re.IGNORECASE),
+}
 INTERRUPT_PREFIX = "[Request interrupted by user"
 
 
@@ -66,8 +71,12 @@ def deny(reason):
     sys.exit(0)
 
 
-def opus_allowed_for(agent_type):
+def premium_allowed_for(agent_type: str) -> bool:
     return agent_type == "reviewer" or agent_type.startswith("magi-")
+
+
+def families_in(text: str) -> set[str]:
+    return {family for family, rx in PREMIUM_RES.items() if rx.search(text)}
 
 
 def user_text(rec):
@@ -151,9 +160,11 @@ def main():
             deny(reason)
         return
 
-    if not OPUS_RE.search(model) or opus_allowed_for(agent_type):
+    wanted = families_in(model)
+    if not wanted or premium_allowed_for(agent_type):
         return
 
+    family = "/".join(sorted(wanted))
     transcript = data.get("transcript_path")
     # No transcript, no proof either way: never block on what cannot be
     # checked, but leave a trace so a renamed field does not go unnoticed.
@@ -162,18 +173,19 @@ def main():
         return
 
     text = last_user_text(transcript)
-    if text is not None and OPUS_RE.search(text):
-        log_event(agent_type, model, "allow-user-opus", "last user message mentions opus")
+    approved = families_in(text) if text is not None else set()
+    if wanted <= approved:
+        log_event(agent_type, model, "allow-user-premium", f"last user message names {family}")
         return
 
     reason = (
-        f"model={model} для subagent_type={agent_type} запрещён: opus только для "
+        f"model={model} для subagent_type={agent_type} запрещён: opus/fable только для "
         f"reviewer и magi-* ({SKILL_REF}). Возьми sonnet или haiku по таблице. Если "
-        "opus действительно нужен — спроси пользователя с ценой (количество × модель × "
-        "effort) и дождись ответа, где он сам назовёт opus («да, opus»); голое «да» "
+        f"{family} действительно нужен — спроси пользователя с ценой (количество × модель × "
+        f"effort) и дождись ответа, где он сам назовёт {family} («да, {family}»); голое «да» "
         "не засчитывается, разрешение видно только в его последнем сообщении."
     )
-    log_event(agent_type, model, "deny-opus", reason)
+    log_event(agent_type, model, "deny-premium", reason)
     deny(reason)
 
 

@@ -2,9 +2,9 @@
 description: "Investigates test failures, runtime errors, crashes, regressions, and unexpected behavior, then returns an evidence-backed root-cause diagnosis. Use after test-runner reports a failure or whenever the cause of a bug is unclear. Read-only: never edits code or implements fixes."
 mode: subagent
 steps: 30
-model: openrouter/~deepseek/deepseek-v4.1-flash-latest
+model: openrouter/deepseek/deepseek-v4.1-flash-1017
 models:
-  - ~deepseek/deepseek-v4.1-flash-latest
+  - deepseek/deepseek-v4.1-flash-1017
   - ~google/gemini-flash-latest
 reasoning:
   effort: medium

@@ -17,8 +17,8 @@ Persona and tone are personal and live in a separate file that is not synced to 
 - Ask clarifying questions when the task is blocked by missing information.
 
 ## Workflow
-- Goal-driven execution: once the Definition of Done is set (see Prompt quality), sketch a brief step plan where each step names how you'll verify it, then loop until every criterion is confirmed.
-- For every task that changes source code or repository configuration, for other non-trivial multi-step work, and before any delegation to subagents, load the `task-orchestration` skill and follow it — ownership, delegation, test and review gates, and completion rules live there. Only a `code-writer` tier edits source code or repository configuration, never the main agent; instructions, docs, and harness configs are not code for this rule.
+- Goal-driven execution: once the Definition of Done is set (see Prompt quality), sketch a brief step plan where each step names how you'll verify it, then loop until every criterion is confirmed or a loop limit in `task-orchestration` stops the work.
+- For every task that changes source code or repository configuration, for other non-trivial multi-step work, and before any delegation to subagents, load the `task-orchestration` skill and follow it — ownership, delegation, test and review gates, and completion rules live there. Only a `code-writer` tier edits source code or repository configuration, never the main agent; instructions, docs, and harness configs are not code for this rule, but scripts in a harness directory (for example `hooks/*.py`, `tools/*.py`) are code.
 - For large-scale prototyping or planning of new work, load the `coding-task-planner` skill (`anthropic-skills:coding-task-planner` in Claude Code) first to turn the request into a concrete, repository-grounded task spec before implementing.
 - When you change an agent, a shared skill, or this file, mirror the change in `~/.codex` and `~/.config/opencode` (OpenCode reads this file directly, so only its agents and skills need copies), or the harnesses drift apart again; Claude-only skills are the exception. Check with `python3 ~/.claude/tools/harness-check.py` (0 problems expected).
 - Personal files stay out of the repo copy and reach each harness differently: Claude Code imports with `@path` in this file, OpenCode lists the path in `instructions` of `opencode.jsonc` (it does not expand `@`), Codex gets no persona. Details are in the README of the config repo.
@@ -28,6 +28,15 @@ Persona and tone are personal and live in a separate file that is not synced to 
 - Python: use `uv` (`uv run`, `uv add`, `uv venv`) unless the project already uses another tool (Poetry, conda, pip with `requirements.txt`).
 - Scratch files go to the session scratchpad (or `$TMPDIR` when there is none), never the project tree. Before mass edits to harness configs, make a backup.
 - Put every backup copy in `~/.harness-backups/`, never next to the original file. Make the copy with `cp` without `-p`, so that its modification time is the backup time. Rotation deletes entries older than 14 days (`python3 ~/.claude/tools/rotate-backups.py`; without `--apply` it only lists).
+- In Claude Code, run `gh` as one standalone command: no pipe, `&&`, `;`, or `cd` prefix. Use `-R owner/repo` and `--jq` instead. Only a standalone command matches the `gh *` sandbox exclusion. In the sandbox, `gh` fails the TLS check and reports a valid token as invalid.
+
+## GitHub identity for agents
+- Each agent writes to GitHub as its own bot. Never use the personal account for agent work.
+- Give each harness its own `GH_CONFIG_DIR` (for example `~/.config/gh-<harness>-bot`). Set the variable in that harness's own settings or env file.
+- A harness that starts from the desktop does not inherit shell variables. Put each agent variable in that app's own env file.
+- Tokens stay in the OS keychain. Never write a token into a file, a command, or chat.
+- If a bot has no valid token, the user runs `GH_CONFIG_DIR=<bot dir> gh auth login` in their own terminal. The agent does not run it.
+- A bot needs write access to each repository it works in. Check with `gh repo view <owner/repo> --json viewerPermission`.
 
 ## Actions and consequences
 - Before any destructive or hard-to-reverse action (delete, overwrite, force-push, deploy, mass edits, schema or data changes, anything outward-facing), stop and confirm with me first.
@@ -77,7 +86,7 @@ Write by the rules of ASD-STE100 Simplified Technical English. The writing rules
 ## Prompt quality
 
 Before acting:
-- If the prompt lacks a clear, testable Definition of Done, state what is missing and propose a minimal DoD. If safely inferable, state it and proceed.
+- If the prompt lacks a clear, testable Definition of Done, state what is missing and propose a minimal DoD. If safely inferable, state it. For work delegated through a task brief, wait for my confirmation first; otherwise proceed.
 - Flag vague, useless, redundant, harmful, or cargo-cult instructions (`think step by step`, `be very careful`, `production-ready`, etc.). Briefly explain why they add no measurable value and suggest a testable replacement.
 - Flag requirements that conflict with the goal or add pointless complexity.
 - Prefer verification (`tests`, `lint`, `typecheck`, repro) over confidence. State what remains unverified.
