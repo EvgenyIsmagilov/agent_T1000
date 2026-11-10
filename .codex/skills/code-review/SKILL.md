@@ -55,7 +55,7 @@ Normal test caches or temporary reports may be created by existing tools. Disabl
 5. Load the skills the change calls for instead of relying on generic knowledge:
    - `python`, `sql`, `airflow`, `docker`, `godot`, `infra` when correctness depends on that stack;
    - `sql-review` and `sql` for meaningful SQL, ETL/ELT, or analytical SQL — perform their full correctness and cluster-cost workflow as part of this review;
-   - `appsec-review` when the diff touches a security surface: authentication, authorization, secrets, untrusted input, data exposure, dependencies, or container and server configuration.
+   - `appsec-review` when the diff touches a security surface: authentication, authorization, secrets, untrusted input, data exposure, dependencies, native or `unsafe` code and FFI, network protocols, multiplayer RPC, queues and webhooks, or container and server configuration.
 6. If the target or base is ambiguous enough to make conclusions unreliable, report `BLOCKED` rather than guessing.
 
 ## Re-review
@@ -92,6 +92,8 @@ Follow changed values from entry point to side effect or return value. Verify br
 
 ### 4. Regression surface
 
+Give each changed file its own pass. A review of an implementation does not cover its interface, header, configuration, or locale counterpart, even when that file is small or secondary. Compare related files in the change set for inconsistencies: an update made in one file and missing in its counterpart, or a contract that one side changed and the other did not.
+
 Inspect direct callers, implementations, interfaces, tests, and configuration affected by the change. Search for duplicated logic or other call paths that should have changed but did not. Check public APIs, schemas, migrations, feature flags, defaults, and deployment order. Look for unrelated edits, accidental behavior changes, dead code, and debug artifacts.
 
 ### 5. Tests and verification
@@ -125,6 +127,13 @@ A breach that causes or is likely to cause a defect is a finding; everything els
 
 Report a finding only when all are present: a concrete scenario or input; an observable incorrect or risky outcome; evidence in the changed or directly affected code; a practical fix direction; a concrete way to verify the fix — a specific test name or command to run or add, or a precise manual check, not a restatement of the failure scenario.
 
+Some categories need a precondition before you report them. If you cannot show the precondition, do not report the finding:
+
+- **Performance** — the data scale is known and the code is on a hot path.
+- **Concurrency** — the code has evidence of concurrent, multi-process, or async invocation.
+- **Injection and untrusted input** — an attacker can control the data source; a trusted constant or validated value does not count.
+- **Edge cases** — a caller contract, a type, or upstream validation does not already exclude the input.
+
 Severity: `CRITICAL` — likely security breach, data loss/corruption, severe outage, or fundamentally invalid solution; `HIGH` — common or important behavior is incorrect, a serious regression is likely, or the task is not actually solved (a missing core requirement lands here); `MEDIUM` — real defect with narrower impact, a meaningful missing failure path, or maintainability risk likely to cause defects; `LOW` — minor but actionable issue with limited impact. Add confidence: `high`, `medium`, or `low`.
 
 Do not inflate severity. Do not report speculative concerns as confirmed defects; when evidence is incomplete, phrase the issue as a risk and state what would confirm it. Group findings that share a root cause. Treat a missing test as a verification gap, not a defect, unless the untested path carries material risk.
@@ -154,7 +163,7 @@ Write the review in the language of the task, formatted as Markdown, using exact
 `APPROVE`, `REQUEST_CHANGES`, or `BLOCKED` — one concise sentence, naming the review depth applied.
 
 ### Review scope
-Reviewed diff, base, commits, or files; spec source (or "no spec available"); standards sources used; verification commands executed and their outcomes. For a mixed review, also the SQL query profile and resource risks.
+Reviewed diff, base, commits, or files; spec source (or "no spec available"); standards sources used; verification commands executed and their outcomes; changed files that you read only partially or did not read (`none` when you gave each file its pass). For a mixed review, also the SQL query profile and resource risks.
 
 ### Spec coverage
 One line per requirement: `done` / `partial` / `missing`, with the quoted spec line; then unrequested behavior, if any. If there is no spec: `No spec available.`

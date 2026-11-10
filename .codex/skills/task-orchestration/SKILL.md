@@ -11,7 +11,7 @@ Act as the task owner. Keep requirements, decisions, and the final completion de
 
 ## Decide whether to orchestrate
 
-Use this workflow for every task that changes source code or repository configuration, however small; a trivial change goes to `code-writer-t1` with a short brief. Instruction, documentation, and harness configuration files (`AGENTS.md`, skills, agents) are not code for this rule. Do not use it for read-only investigation, research, or document-only work — answer those directly or through a researcher.
+Use this workflow for every task that changes source code or repository configuration, however small; a trivial change goes to `code-writer-t1` with a short brief. Instruction, documentation, and harness configuration files (`AGENTS.md`, skills, agents) are not code for this rule; scripts in a harness directory (hooks, tools) are code. Do not use it for read-only investigation, research, or document-only work — answer those directly or through a researcher.
 
 ## Delegate narrowly
 
@@ -46,23 +46,19 @@ Run subagents in parallel only when their work is independent and read-only. Nev
 Every delegation costs tokens and wall-clock, and every report lands back in your context. Spend deliberately.
 
 - Match the role to the question. Each agent file fixes its `model` and `model_reasoning_effort`; whether a spawn can override the model per call is unverified here, so pick the cheaper role instead — `web-researcher` over `docs-researcher`, `code-writer-t1` over `code-writer-t2` when `code-tier-assessment` allows it.
-- Know what the heavy roles cost before reaching for one. `reviewer` runs `gpt-6-astra`, the most capable and most expensive model, at `high` effort. Right for a risky diff, absurd for a typo.
+- Know what the heavy roles cost before reaching for one. `reviewer` runs `gpt-6-astra`, the most capable and most expensive model, at `high` effort. Every slice that changed code still gets one `reviewer` run (Work loop step 10), so on a small diff keep its brief and target narrow instead of skipping it.
 - At most 10 subagents in flight at once, and only when each answers a different question. Parallel work multiplies spend immediately and drops several reports into your context at the same moment.
 - Actual spend is cut by the `gpt-6-luna` roles at low or medium effort (`web-researcher`, `test-runner`, `code-writer-t1`; `docs-researcher` is on `gpt-6-luna` too, but at `high` effort); reach for `web-researcher` over `docs-researcher` whenever one authoritative source settles the question.
-- Never pay twice for the same evidence. A check `code-writer` ran and reported does not get rerun by `test-runner`, and a file a subagent summarized does not get re-read in the main context.
+- Never pay twice for the same evidence. A check `code-writer` ran and reported does not get rerun by `test-runner`, except the slice's closing check (Work loop step 6), and a file a subagent summarized does not get re-read in the main context.
 - Codex writes no run log, so cost and report state cannot be measured afterwards. Judge each report by its contract as it arrives: a valid report, a malformed one, and an empty one are different states.
 
 ## Executor tiers
 
-`code-writer` ships as three separate agent files, one per tier — `code-writer-t1`, `code-writer-t2`, `code-writer-t3` — because model and effort differ between them.
+`code-writer` ships as three separate agent files, one per tier — `code-writer-t1`, `code-writer-t2`, `code-writer-t3` — because each tier has its own model configuration.
 
-| Tier | Agent | Model | Effort |
-|---|---|---|---|
-| T1 | `code-writer-t1` | gpt-6-luna | medium |
-| T2 | `code-writer-t2` | gpt-6-sol | medium, the default |
-| T3 | `code-writer-t3` | gpt-6-sol | xhigh |
+Model and effort per tier, and the criteria for each tier, live in `code-tier-assessment`; the agent files are the source of truth for the settings.
 
-`gpt-6-astra` never writes code — it stays reserved for `reviewer`. Only a `code-writer` tier may edit source or repository configuration: `planner`, `reviewer`, `bug-investigator`, `finding-verifier`, both researchers, and `test-runner` carry `sandbox_mode = "read-only"`, so their boundary is enforced rather than requested.
+Only a `code-writer` tier may edit source or repository configuration: `planner`, `reviewer`, `bug-investigator`, `finding-verifier`, both researchers, and `test-runner` carry `sandbox_mode = "read-only"`, so their boundary is enforced rather than requested.
 
 T2 and T3 work test-first: a failing test, then the smallest code that passes it, one piece of behavior at a time. T1 does not — a red-green cycle on a one-line fix doubles the cost of the cheapest tier for nothing. The rules live in those two agent files; what they must cover comes from the brief's `test_scope`, because an isolated executor cannot ask you mid-run and will stop rather than invent the scope.
 
@@ -85,15 +81,18 @@ Before delegating non-trivial work, compose one structured brief and reuse it fo
 - `files_to_inspect`: the specific files to read before changing anything.
 - `changes`: per file, a `file` and a one-line `action` — what must change, not how.
 - `risks`: concrete ways the change could break something else.
+- `invariant_paths`: for `T2` and `T3`, every code path and twin implementation (for example a C# copy and a GDScript copy) that holds the invariant this slice touches. Find them by search, not from memory. If there is only one, write `none` and the reason.
+- `data_sample`: for `T2` and `T3`, the real sample (a file, a record, a query result) that your assumptions about an external data format were checked against. Write `n/a` if the slice reads no external format.
+- `spec_check`: for `T2` and `T3`, the ticket or requirement you compared the brief with, and a statement that the brief contradicts neither it nor itself. If there is no ticket, write `none` and the reason.
 - `test_scope`: for `T2` and `T3`, the public surface the tests must go through, and which of the `risks` above must be covered as failure modes. Both tiers work test-first and will stop rather than guess when the code offers more than one plausible surface, so name it. Breadth is your call, not theirs: happy path plus the named failure modes, not an exhaustive sweep of edge cases. When the project has no test setup, say so here — the implementer will not build one on its own initiative. Omit for `T1`.
-- `acceptance_criteria`: how to verify done (build, specific test, observed behavior).
+- `acceptance_criteria`: how to verify done (build, specific test, observed behavior). A criterion checks behavior on a fixture or a controlled input, not a snapshot of live data.
 - `attempt` and `run`: on any brief after the first for this slice, which of the two attempts at this tier and which of the nine runs on the slice. Codex keeps no run log, so nothing else holds that count.
 
 Before handing it off:
 - If something needed for the brief is missing (unclear goal, unknown files, no acceptance criteria), ask the user directly instead of guessing.
-- If you filled gaps by inference, do not proceed silently. Summarize the assumptions against the structure above and get the user to confirm before delegating.
+- If you filled gaps by inference, do not proceed silently. Summarize the assumptions against the structure above, inferred `acceptance_criteria` included, and get the user to confirm before delegating.
 
-When the work comes from a subagent report — a reviewer finding or a `bug-investigator` diagnosis — do not author a fresh brief and do not summarize. Forward the report's own section verbatim as the brief, adding only the objective and the files in scope. Carry the reporter's qualifiers with it: severity, confidence, and a diagnosis status of `PROBABLE` or `INCONCLUSIVE`. Never present a hedged diagnosis as established, and do not delegate a fix from an `INCONCLUSIVE` or `BLOCKED` report.
+When the work comes from a subagent report — a reviewer finding or a `bug-investigator` diagnosis — do not author a fresh brief and do not summarize. For a `T2` or `T3` slice, still copy the slice's `invariant_paths`, `data_sample`, and `spec_check` lines into it. Forward the report's own section verbatim as the brief, adding only the objective and the files in scope. Carry the reporter's qualifiers with it: severity, confidence, and a diagnosis status of `PROBABLE` or `INCONCLUSIVE`. Never present a hedged diagnosis as established, and do not delegate a fix from an `INCONCLUSIVE` or `BLOCKED` report.
 
 ### Isolated slices (not used here)
 
@@ -112,21 +111,21 @@ When the work comes from a subagent report — a reviewer finding or a `bug-inve
 
 ## Work loop
 
-1. Define acceptance criteria and identify material risks.
+1. Define acceptance criteria and identify material risks. Record `git status --short` as the task baseline; **Working tree at completion** checks the final state against it.
 2. Inspect the relevant repository context before researching externally. Before planning anything new, check that it does not already exist. Search by domain concept, not by the wording of the request — the project may call the same thing something else. Search with `rg` in the main context; there is no broad-search subagent here. State where you looked. If the behavior already exists, report that instead of building it.
 3. When the task is a reported defect, reproduce it before planning a fix. Delegate to `bug-investigator` — reproduction and root cause come back from the same run, so never split them across two delegations or repeat this work at step 7. Run the check yourself only when it is a single command whose output is short; anything noisier belongs inside the subagent. Three outcomes:
    - reproduced — carry the diagnosis, with its severity and confidence, into the plan and the brief;
    - not reproduced — report that to the user and stop; do not fix a defect you could not observe;
    - cannot be reproduced here (missing environment, production data, cluster access) — say so plainly rather than substituting a weaker check, and ask the user how to proceed.
-4. Plan non-trivial work. Spawn `planner` only when the approach is genuinely open: several plausible designs, a schema, data, or migration change, or unclear requirements. For a large new work item run the `coding-task-planner` skill instead of `planner`, not before it. Then stress-test it with the user via the `grilling` skill before building. This is the default, not a step reserved for risky plans: the questions are cheapest before any code exists, and a plan that survives them needs no rework later. Skip it only when the user has already answered the same questions in this session, or explicitly asks you to skip.
+4. Plan non-trivial work. Spawn `planner` only when the approach is genuinely open: several plausible designs, a schema, data, or migration change, or unclear requirements. For a large new work item run the `coding-task-planner` skill instead of `planner`, not before it. Then load the `grilling` skill and let its own test decide: grill the plan when it has open, consequential decisions; when nothing material is open, say so and proceed. Skip it also when the user has already answered the same questions in this session, or asks you to skip.
 5. Implement the smallest coherent change: classify it with `code-tier-assessment` and delegate to the tier's `code-writer-t1/t2/t3` agent with the brief above — `code-writer-t1` for trivial work. Never edit source or repository configuration yourself. When its report comes back, take a snapshot of the working tree (see **Snapshots**) before anything else touches the tree.
-6. Run validation through `test-runner`, forwarding the `Verification` section of the implementer's report as-is — the commands already run with their outcomes, and everything it listed as not verified. `test-runner` closes the unverified gaps and the canonical check; it must not repeat a check that already passed. The check that closes a slice always runs here, never in the main context: a check nobody recorded is a claim rather than a gate, and the `test-runner` report is the only record of it Codex keeps. Exploratory checks — a grep, a quick sanity run while still deciding what to do — stay wherever they are cheapest; simply do not pre-run the closing check yourself, or `test-runner` is left with nothing to close. Name the slice's `slice_id` in this delegation too: validation is part of the slice's record, and a run without it cannot be attributed to the slice it validated. Around this delegation keep a clean-worktree baseline: before it, record `git status --short` (it lists untracked files too) and the hash `git diff --binary | shasum`; after it, compare both — never pull the diff itself into context. If `test-runner` changed source or repository configuration, block the gate and report the paths — do not auto-revert anything. Pre-existing user changes are baseline and are never reverted.
+6. Run validation through `test-runner`, forwarding the `Verification` section of the implementer's report as-is — the commands already run with their outcomes, and everything it listed as not verified. `test-runner` closes the unverified gaps and always runs the slice's closing check, even when the implementer already ran it and it passed; apart from that closing check, it must not repeat a check that already passed. The check that closes a slice always runs here, never in the main context: a check nobody recorded is a claim rather than a gate, and the `test-runner` report is the only record of it Codex keeps. Exploratory checks — a grep, a single targeted test while still deciding what to do — stay wherever they are cheapest. Never run the project's test suite, build, or lint in the main context: a suite you ran yourself is not a gate (Claude Code enforces this with a hook; here it is on you). Name the slice's `slice_id` in this delegation too: validation is part of the slice's record, and a run without it cannot be attributed to the slice it validated. Around this delegation keep a clean-worktree baseline: before it, record `git status --short` (it lists untracked files too) and the hash `git diff --binary | shasum`; after it, compare both — never pull the diff itself into context. If `test-runner` changed source or repository configuration, block the gate and report the paths — do not auto-revert anything. Any other new path it left, such as a cache or a report, is `junk` for **Working tree at completion**. Pre-existing user changes are baseline and are never reverted.
 7. On failure, identify the root cause before fixing. If step 3 already diagnosed this defect, build on that verdict instead of re-running the investigation. When the cause is genuinely one-line and obvious, send the fix straight to a `code-writer` tier without an investigation; default to `bug-investigator` otherwise — if you are still deciding whether it counts as obvious, it does not, delegate. Give it the failing command and concise evidence. Never patch just the symptom (suppressing an error, adding a defensive check, retrying) without confirming why the failure actually occurs.
-8. From the second failure on the same slice — or the same error twice in a row — stop editing and run this procedure before anything else:
+8. From the second failure at the slice's current tier — or the same error twice in a row at that tier — stop editing and run this procedure before anything else:
    1. Record the state: `git status --short` and `git diff --stat`.
    2. Classify the failure. `bug-investigator` returns a root cause only — it never saw the brief and does not know how the work was sliced, so it cannot judge whether the spec is complete or the slice too large. You own the classification; map the diagnosis against your own brief:
       - `executor` — the implementer was not capable enough: raise the tier, attempt spent;
-      - `spec` — the brief is incomplete or self-contradictory: return to planning or ask the user, same tier, attempt not spent;
+      - `spec` — the brief is incomplete or self-contradictory: return to planning or ask the user, same tier, attempt not spent. This class also applies when each fix makes a new failure appear in a different place: the design is wrong, and a higher tier does not repair a design; If a `planner` plan covers the slice, give the planner the failure report verbatim and name the files that changed on disk since it planned. Continue the same planner only if a resume mechanism exists (see "Continuation, and its limits"); otherwise spawn a fresh planner with the earlier plan plus the failure report;
       - `env` — flake, broken fixture, missing environment: fix the environment and retry, same tier, attempt not spent;
       - `slicing` — the slice is too large: recut it, same tier, counter reset.
    3. Act on the class. `executor`: keep only the coherent verifiable subset you can name, revert the rest, and raise the tier by one (T1→T2 or T2→T3, never skipping) with a fresh brief plus the handoff block in step 9 — otherwise the next tier builds on the previous one's leftovers. `spec`: return to planning or ask the user. `env`: fix the environment and retry. `slicing`: recut the slice.
@@ -136,7 +135,7 @@ When the work comes from a subagent report — a reviewer finding or a `bug-inve
    Raising the tier only cures missing capability. A stronger model or more effort does not repair a contradictory requirement — it invents a confident reading of it.
 9. A fresh implementer after a failure gets a fresh brief, never the transcript, plus this handoff block:
    - `previous_tier`: the tier that failed;
-   - `previous_failure_class`: `executor`;
+   - `previous_failure_class`: the class from step 8;
    - `symptom`: the command and its output, truncated;
    - `tried`: what was changed, with what result;
    - `ruled_out`: hypotheses eliminated, and by what evidence;
@@ -144,7 +143,7 @@ When the work comes from a subagent report — a reviewer finding or a `bug-inve
    - `kept`: which edits remain in the working tree.
 
    A transcript of failed attempts carries the frame the previous implementer was stuck in, not the facts.
-10. After validation passes, spawn `reviewer` once for non-trivial or high-risk changes, with the same brief, the final diff, the test report, and the snapshot ref of the state under review — not the implementer's or the planner's reasoning. Name in the brief which conditional skills the change calls for (`sql-review` + `sql`, `appsec-review`, `airflow`, `python`); the reviewer loads `code-review` regardless and returns one integrated verdict.
+10. After validation passes, spawn `reviewer` once, with the same brief, the final diff, the test report, and the snapshot ref of the state under review — not the implementer's or the planner's reasoning. Name in the brief which conditional skills the change calls for (`sql-review` + `sql`, `appsec-review`, `airflow`, `python`); the reviewer loads `code-review` regardless and returns one integrated verdict. Every slice that changed code gets reviewed; you do not get to call a change trivial and skip it. Only the user may waive the review.
 11. Triage each review finding without re-deriving it: check it isn't a duplicate or an already-rejected false positive, reject only with evidence, then forward the reviewer's evidence and fix direction verbatim — do not paraphrase or re-diagnose. When a finding is doubted, run `finding-verifier` on it before triaging further. Send it to the implementer that wrote the slice when **Continuation, and its limits** below allows it; otherwise it becomes the brief for a fresh `code-writer`. Rerun affected validation and review afterward. The re-review brief carries the previous findings verbatim plus the delta between the snapshot the previous review judged and the new one (`git diff refs/snapshots/<slice_id>/<prev> refs/snapshots/<slice_id>/<new>`), so `code-review`'s **Re-review** can check those findings first and review only the delta instead of the whole change again.
 12. Decide whether the task is complete. A subagent verdict is evidence, not the final decision.
 
@@ -160,9 +159,10 @@ tmp=$(mktemp -u "${TMPDIR:-/tmp}/snapidx.XXXXXX") && idx=$(git rev-parse --git-p
 
 - It goes through a temporary index, so the tree, the real index, and the branch stay untouched. Untracked files are included and `.gitignore` is respected, so ignored secrets such as `.env` stay out. It works in a worktree and in a repository with no commits. Verified in zsh and bash.
 - No `snapshot … = <sha>` line means no snapshot. Stop and report it; never continue the slice on an assumed snapshot.
+- You do every revert yourself — step 8, **Unusable and truncated returns** — and only after the run's snapshot exists. A revert restores a recorded state, it is not a code edit, and the snapshot is its undo path, so it needs no confirmation. Changes that `test-runner` made are the exception: report them, never revert them (step 6).
 - Restore: `git checkout refs/snapshots/<slice_id>/<n> -- .`. List: `git for-each-ref refs/snapshots/`. The ref keeps the commit alive through `reset --hard`, reflog expiry, and `gc --prune=now`.
 - Leave snapshots in place after the task; delete a slice's refs (`git update-ref -d`) only when the user asks.
-- Outside a git repository (for example `~/.claude` itself), copy the touched files into the session scratchpad instead, one directory per run.
+- Outside a git repository (for example `~/.claude` itself), copy the touched files with `cp` (without `-p`) into `~/My_Projects/claude/.harness-backups/<slice_id>-<n>/` instead, one directory per run, as `CLAUDE.md` requires for every backup.
 
 
 ## Continuation, and its limits
@@ -183,10 +183,29 @@ Finish only when all applicable conditions hold:
 - a security-sensitive surface (authentication, secrets, permissions, untrusted input, data exposure) was reviewed as such — by `reviewer` with `appsec-review` loaded;
 - no validation was disabled or weakened merely to pass;
 - no temporary debugging artifacts remain, and temporary report files are not referenced from code, docs, or the final answer;
-- `DECISIONS.md` carries any durable decision, constraint, or gotcha the work produced that passes the reuse test in `AGENTS.md` — and nothing that fails it;
+- every path in `git status --short` is accounted for, as **Working tree at completion** describes;
+- `DECISIONS.md` carries any durable decision, constraint, or gotcha the work produced that meets the recording rules of the `DECISIONS.md` section in `AGENTS.md` — and nothing that fails it;
 - unverified assumptions and limitations are disclosed.
 
 Do not claim a check passed unless it was executed.
+
+## Working tree at completion
+
+Implementers never commit, and you commit only when the user asks. So the work stays in the working tree, and nothing removes what the task left there unless this step does. Before the final report:
+
+1. Run `git status --short` in every checkout the task touched, each worktree included.
+2. Put each path in one class:
+   - `deliverable`: part of the result. List it in the final report.
+   - `baseline`: in the task baseline from step 1 of **Work loop**. Do not touch it.
+   - `junk`: anything else, for example a backup copy (`.bak`, `.orig`), an ad-hoc script, a test cache, a report, or a log.
+3. If a tool will make a `junk` path again, extend `.gitignore` for it.
+4. List the other `junk` paths in one question to the user. Remove them only after the user says yes.
+5. If you cannot put a path in a class, ask the user about it. Do not delete it. Until then the task is not complete.
+6. In the final report, list the uncommitted `deliverable` paths and offer one commit. Commit only after the user says yes.
+7. For each isolated slice with a merged branch, offer to remove its worktree (`git worktree remove <path>`) and its branch (`git branch -d <branch>`). Ask before each removal. Never remove an unmerged branch or a worktree with uncommitted changes. Name them in the report instead.
+8. Snapshot refs stay, as **Snapshots** says. List the task's refs in the report and offer to delete them.
+
+Outside a git repository, compare the touched directories against the backup copy from **Snapshots** instead of `git status`.
 
 ## Loop limits
 
@@ -194,7 +213,7 @@ Do not claim a check passed unless it was executed.
 - Attempts per tier: 2 at T1, then 2 at T2, then 2 at T3, then stop and report `PARTIAL` or `BLOCKED`. An attempt is spent only on a failing `test-runner` or `reviewer` verdict — never on the implementer's own account of its work, and never on a `spec`, `env`, or `slicing` classification.
 - Hard ceiling of 9 implementer runs on one slice, counting every failure class. Without it the classes that do not spend an attempt loop forever.
 - Keep these counts in the brief itself (`attempt`, `run`, `previous_failure_class`), not in your head: Codex writes no run log, so nothing reconstructs them afterwards. A brief with no count on a slice that has already failed once means you lost the thread — stop and re-read the earlier briefs rather than guess the number.
-- Allow at most 3 implementation-review cycles.
+- A failing `reviewer` verdict spends an attempt exactly as a failing `test-runner` verdict does, so the tier ladder above also caps implementation-review cycles; there is no separate cycle limit.
 - Stop earlier if two consecutive cycles produce no measurable progress.
 - Do not rerun a subagent with materially identical input unless new evidence exists.
 - When limits are reached, stop speculative edits and report `PARTIAL` or `BLOCKED` with the remaining issue and next concrete action.

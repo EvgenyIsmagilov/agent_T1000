@@ -21,3 +21,20 @@ BRIEF_RE = {
     )
     for name, pattern in BRIEF_FIELDS.items()
 }
+
+# A value needs at least one letter or digit: punctuation alone does not count.
+# The JS twin in claude-hooks.js must use the same class text.
+_VALUE = r"[ \t]*[^\n]*?[A-Za-z0-9А-Яа-яЁё]"
+
+# Checklist lines required in a code-writer-t2/t3 brief. Same line-anchored
+# form as BRIEF_RE, but any non-empty value on the same line counts: the hook
+# checks presence, not truthfulness. Kept out of BRIEF_FIELDS so the
+# log-subagent.py output does not change.
+CHECKLIST_FIELDS = ("invariant_paths", "data_sample", "spec_check")
+CHECKLIST_RE = {
+    name: re.compile(
+        r"^[ \t]*[-*]?[ \t]*`?" + name + r"`?[ \t]*[:=]" + _VALUE,
+        re.MULTILINE | re.IGNORECASE,
+    )
+    for name in CHECKLIST_FIELDS
+}

@@ -24,8 +24,8 @@ decide which subagent runs:
 | Role | Job | Model / effort |
 |---|---|---|
 | `code-writer-t1/t2/t3` | implement one slice | see Tiers below |
-| `reviewer` | adversarial review of a diff; loads `code-review`, plus `sql-review`/`sql` for SQL and `appsec-review` for security surfaces | opus / xhigh |
-| `planner` | read-only sliced plan, risks, acceptance criteria | sonnet / high |
+| `reviewer` | adversarial review of a diff; loads `code-review`, plus `sql-review`/`sql` for SQL and `appsec-review` for security surfaces | fable 5.1 (`claude-fable-5-1`) / xhigh |
+| `planner` | read-only sliced plan, risks, acceptance criteria | fable 5.2 / high |
 | `test-runner` | run existing checks, report failures | haiku / low |
 | `bug-investigator` | reproduce + root-cause a defect | sonnet / high |
 | `docs-researcher` | version-sensitive research | sonnet / high |
@@ -118,9 +118,9 @@ Codex already runs `reviewer` with `sandbox_mode = "read-only"`; OpenCode uses
 `permissionMode: default` was dropped in the same change: it forced manual
 prompts even under an auto-mode parent, and the hook is the boundary now.
 Re-review got its own rules in `code-review` (previous findings first, then the
-delta) so a fix round does not pay for a full opus/xhigh review again.
+delta) so a fix round does not pay for a full fable/xhigh review again.
 
-`opus` never writes code — it is reserved for the two reviewer roles. That's
+`opus` or `fable` never writes code — it is reserved for the review and planning roles (`reviewer` and `planner` run `fable` 5.2, `magi-*` run `opus`). The user moved `planner` to `fable` on 2026-11-10. That's
 a deliberate boundary, not an oversight: review benefits from the strongest
 available judgment on someone else's finished work; writing benefits more
 from tiering, because most slices are not hard.
@@ -243,8 +243,19 @@ Two limits are recorded rather than solved:
   doctrine gate's own `CLAUDE_ORCHESTRATION_GATE=0`). The OpenCode plugin
   mirrors both checks with `OPENCODE_ORCHESTRATION_GATE=0` /
   `OPENCODE_SLICE_GATE=0`.
-- `check-file-size.py` (PreToolUse on `Read`): refuses a whole-file read
-  above 350 lines, forcing large reads through `Explore` or `offset`/`limit`.
+  A third check refuses `code-writer-t2/t3` unless the prompt also carries
+  `invariant_paths:`, `data_sample:`, and `spec_check:` lines, each with a
+  value on the same line that holds a letter or digit (`CHECKLIST_RE` in
+  `brief_fields.py`; `none — <reason>` and `n/a` pass). These fields target
+  the spec failures found on 2026-11-10: missed twin code paths, unchecked
+  external data formats, and briefs that contradict the ticket. DSH runs the
+  same hook through `dsh_adapter.py`. Kill switches:
+  `CLAUDE_BRIEF_CHECKLIST_GATE=0` and `OPENCODE_BRIEF_CHECKLIST_GATE=0`.
+- `check-file-size.py` (PreToolUse on `Read`): refuses a read that returns
+  more than 350 lines (whole file, or `offset`/`limit` above the threshold).
+  The refusal names chunked `offset`/`limit` reads. For a file inside the
+  session working directory, it also gives an outline of symbols with line
+  numbers. It never returns an `allow` decision.
 - `config-protection.py` (PreToolUse on `Edit`/`Write`): refuses to weaken a
   linter or type-checker config. It is what enforces the completion gate's
   "no validation was disabled or weakened merely to pass", which until now was
@@ -289,7 +300,7 @@ These are cross-file couplings with no compiler to catch drift:
   first-pass-rate calculation.
 - Effort is fixed per agent file and cannot be set on an `Agent` call — any
   new tier or role needs its own file, never a call-time parameter.
-- `opus` writes no code. If that ever changes, it's a deliberate, named
+- `opus` or `fable` writes no code. If that ever changes, it's a deliberate, named
   exception, not a quiet default.
 
 ## Known open gaps (as of 2026-09-20)
