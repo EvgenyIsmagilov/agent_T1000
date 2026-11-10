@@ -26,10 +26,11 @@
 - рабочий каталог модели пуст и лежит вне чекаута; чекаут и diff лежат в одном каталоге, и правила агента
   разрешают читать только его (external_directory); конфиг и инструкции проекта из чекаута отключены флагами;
 - символьные ссылки из PR git создаёт обычными файлами (core.symlinks=false), иначе read прошёл бы по ссылке наружу;
-- агент pr-reviewer определён только в ~/.config/opencode/opencode.jsonc. Скрипт кладёт копию этого файла без
+- агент pr-reviewer определён только в opencode.jsonc (по умолчанию рядом с каталогом tools/). Скрипт кладёт копию этого файла без
   instructions (там персона пользователя) и с одним разрешённым каталогом в XDG_CONFIG_HOME запуска.
 Второй рубеж против персоны: validate_verdict отклоняет ответ с маркерами из файла PR_REVIEW_PERSONA_MARKERS;
-если файл не задан или не читается, этот рубеж пропускается с заметкой в stderr.
+если переменная не задана (пустая считается заданной и непригодной), рубеж пропускается с предупреждением; если задана, но файл непригоден, запуск
+завершается с кодом 2 до первого вызова gh.
 Маршрутизацию OpenRouter (zdr, data_collection) задаёт extraBody провайдера в том же конфиге. Какой эндпоинт ответил,
 скрипт не проверяет: в потоке `opencode run --format json` этого нет.
 """
@@ -47,7 +48,7 @@ from pathlib import Path
 from typing import Any
 
 BOT_LOGIN_ENV = "PR_REVIEW_BOT_LOGIN"  # логин аккаунта gh, от имени которого скрипт пишет в PR
-GH_CONFIG_DIR = str(Path.home() / ".config/gh-codex-bot")
+GH_CONFIG_DIR_ENV = "PR_REVIEW_GH_CONFIG_DIR"  # каталог конфигурации gh бота; по умолчанию ~/.config/gh-codex-bot
 PR_FIELDS = "number,title,body,state,isDraft,mergeable,headRefOid,baseRefName,url,statusCheckRollup"
 MODEL_TIMEOUT = 1200  # секунд на один вызов модели; 0 в --model-timeout снимает лимит
 GH_TIMEOUT = 120
@@ -102,12 +103,24 @@ def parse_pr_ref(ref: str) -> tuple[str, str, int, str]:
   return owner, repo, number, f"https://github.com/{owner}/{repo}/pull/{number}"
 
 
+def gh_config_dir() -> str:
+  """Каталог конфигурации gh бота: PR_REVIEW_GH_CONFIG_DIR с ~ или ~/.config/gh-codex-bot; путь должен быть абсолютным."""
+  raw = os.environ.get(GH_CONFIG_DIR_ENV)
+  try:
+    path = Path(raw).expanduser() if raw is not None else Path.home() / ".config/gh-codex-bot"
+  except RuntimeError as e:  # неизвестный пользователь в ~user или нет домашнего каталога
+    raise Abort(2, f"{GH_CONFIG_DIR_ENV} cannot be expanded") from e
+  if not path.is_absolute():
+    raise Abort(2, f"{GH_CONFIG_DIR_ENV} is not an absolute path")
+  return str(path)
+
+
 def gh_env() -> dict[str, str]:
   """Окружение для gh: токены из окружения перебили бы GH_CONFIG_DIR, поэтому они убираются."""
   env = dict(os.environ)
   for name in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"):
     env.pop(name, None)
-  env["GH_CONFIG_DIR"] = GH_CONFIG_DIR
+  env["GH_CONFIG_DIR"] = gh_config_dir()
   return env
 
 
@@ -217,22 +230,37 @@ def extract_json_object(text: str) -> dict[str, object]:
   return obj
 
 
-def load_persona_markers() -> re.Pattern[str] | None:
-  """Маркеры персоны из файла PERSONA_MARKERS_ENV; None, если файла нет: проверка тогда пропускается."""
+def load_persona_markers() -> list[re.Pattern[str]] | None:
+  """Маркеры персоны из файла PERSONA_MARKERS_ENV, по одному выражению на строку (без учёта регистра, пробелы по
+  краям отбрасываются); None, только если переменная не задана. Каждая строка компилируется отдельно: общее
+  выражение через "|" ломало бы флаги, номера групп и экранирование соседних строк.
+  Заданная, но непригодная (пустая, нет файла, пусто, не UTF-8, неверная строка) переменная даёт ValueError."""
   path = os.environ.get(PERSONA_MARKERS_ENV)
-  try:
-    patterns = [p for p in Path(path).read_text(encoding="utf-8").splitlines() if p.strip()] if path else []
-    if patterns:
-      return re.compile("|".join(patterns), re.IGNORECASE)
-  except (OSError, re.error) as e:
-    print(f"pr-review: persona marker check skipped: {e}", file=sys.stderr)
+  if path is None:
     return None
-  print(f"pr-review: persona marker check skipped: {PERSONA_MARKERS_ENV} is unset or empty", file=sys.stderr)
-  return None
+  try:
+    if not path:
+      raise ValueError("variable is empty")
+    # utf-8-sig: BOM иначе прилипает к первому выражению и отключает его.
+    patterns: list[re.Pattern[str]] = []
+    for number, line in enumerate(Path(path).read_text(encoding="utf-8-sig").splitlines(), 1):
+      if not line.strip():
+        continue
+      try:
+        patterns.append(re.compile(line.strip(), re.IGNORECASE))
+      except (re.error, OverflowError, RecursionError) as e:
+        raise ValueError(f"line {number} is not a valid pattern ({type(e).__name__})") from e
+    if not patterns:
+      raise ValueError("file has no patterns")
+    return patterns
+  except (OSError, ValueError) as e:  # UnicodeDecodeError это ValueError
+    # Свои сообщения (номер строки) безопасны; текст чужих исключений может содержать путь или байты.
+    reason = str(e) if type(e) is ValueError else type(e).__name__
+    raise ValueError(f"{PERSONA_MARKERS_ENV} is unusable: {reason}") from e
 
 
 def validate_verdict(obj: dict[str, object], diff: DiffLines,
-                     markers: re.Pattern[str] | None = None) -> dict[str, object]:
+                     markers: list[re.Pattern[str]] | None = None) -> dict[str, object]:
   """Строгая проверка вердикта; бросает ValueError с причиной (без текста модели)."""
   if set(obj) != {"verdict", "summary", "findings"}:
     raise ValueError("unexpected or missing top-level keys")
@@ -259,7 +287,7 @@ def validate_verdict(obj: dict[str, object], diff: DiffLines,
     if not isinstance(f["body"], str) or not f["body"].strip() or len(f["body"]) > MAX_BODY:
       raise ValueError("bad finding body")
   texts = [summary] + [str(f["body"]) for f in findings]
-  if markers and any(markers.search(t) for t in texts):
+  if markers and any(m.search(t) for m in markers for t in texts):
     raise ValueError("persona markers in the answer")
   return obj
 
@@ -362,9 +390,8 @@ def write_model_config(config: dict[str, Any], dest: Path, root: Path) -> None:
 
 
 def run_model(args: argparse.Namespace, config: dict[str, Any], sha: str, diff_text: str, diff: DiffLines,
-              text: PrText) -> dict[str, object]:
+              text: PrText, markers: list[re.Pattern[str]] | None) -> dict[str, object]:
   """Вызывает модель; одна повторная попытка при невалидном ответе, затем Abort(4)."""
-  markers = load_persona_markers()
   with tempfile.TemporaryDirectory(prefix="pr-review-") as tmp:
     # Реальный путь, как его видит процесс: /var на macOS ссылка на /private/var.
     base = Path(tmp).resolve()
@@ -572,6 +599,16 @@ def review(args: argparse.Namespace, summary: dict[str, object]) -> None:
   bot_login = os.environ.get(BOT_LOGIN_ENV)
   if not bot_login:
     raise Abort(2, f"{BOT_LOGIN_ENV} is not set")
+  try:
+    markers = load_persona_markers()
+  except ValueError as e:
+    raise Abort(2, str(e)) from e
+  gh_config_dir()
+  if markers is None:
+    note = f"persona marker check skipped: {PERSONA_MARKERS_ENV} is unset"
+    log(f"pr-review: {note}")
+    assert isinstance(summary["warnings"], list)
+    summary["warnings"].append(note)
   config = load_reviewer_config(args.opencode_config)
   login = gh(["api", "user", "--jq", ".login"]).strip()
   if login != bot_login:
@@ -599,7 +636,7 @@ def review(args: argparse.Namespace, summary: dict[str, object]) -> None:
 
   diff = parse_diff(diff_text)
   text = PrText(str(pr.get("title", "")), str(pr.get("body") or ""), discussion_text(owner, repo, number))
-  verdict = run_model(args, config, sha, diff_text, diff, text)
+  verdict = run_model(args, config, sha, diff_text, diff, text, markers)
   summary["verdict"] = verdict["verdict"]
   findings = verdict["findings"]
   assert isinstance(findings, list)
@@ -619,7 +656,8 @@ def review(args: argparse.Namespace, summary: dict[str, object]) -> None:
   if fresh.get("state") != "OPEN":
     raise Abort(5, f"PR is no longer open ({fresh.get('state')})")
   guard_reasons, warnings = merge_guards(fresh)
-  summary["warnings"] = warnings
+  assert isinstance(summary["warnings"], list)
+  summary["warnings"].extend(warnings)
   post_once(args, summary, "ok", lambda: post_comment(url, ok_comment(args.model, sha, guard_reasons)))
   if not args.merge:
     reasons.append("--merge не запрошен")

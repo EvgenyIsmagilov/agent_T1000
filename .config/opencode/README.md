@@ -79,21 +79,32 @@ leave it unset to deny Trino MCP calls everywhere.
 `opencode` and, on request, posts the result. Settings come from the environment:
 
 - `PR_REVIEW_BOT_LOGIN` (required) — the `gh` account the script writes as. The
-  script stops with exit code 2 if the active `gh` identity differs.
+  script stops with exit code 2 if that account differs from the identity `gh` reports.
+- `PR_REVIEW_GH_CONFIG_DIR` (optional) — the `gh` config directory the script uses
+  (default `~/.config/gh-codex-bot`; `~` is expanded, a relative path stops the script
+  with exit code 2). The script ignores the ambient `GH_CONFIG_DIR`
+  and drops `GH_TOKEN`, `GITHUB_TOKEN` and the enterprise token variables.
 - `OPENROUTER_API_KEY` (required) — passed to the model process.
 - `PR_REVIEW_PERSONA_MARKERS` (optional) — path to a private file with one regular
-  expression per line. A model answer that matches one is rejected. If the variable is
-  unset or the file is unreadable, the check is skipped and a note goes to stderr.
-  Keep that file out of the repository.
+  expression per line, UTF-8; each line is compiled on its own, matches ignore case and
+  white space around a line is stripped. A model answer that matches one is rejected. If the
+  variable is unset, the check is skipped, a note goes to stderr and a warning goes to
+  `warnings` in the JSON summary. If the variable is set but empty, or the file is
+  missing, is a directory, is empty, is not UTF-8 or has a line that is not a valid
+  regular expression, the script stops with exit code 2 before any `gh` call. A user
+  with a persona must set this variable. Keep the file out of the repository.
 
 The script builds the run config from your `opencode.jsonc` (default
-`~/.config/opencode/opencode.jsonc`), which must define a `pr-reviewer` agent. Add a
-block like this one to your own file; the `prompt` path must be absolute:
+`opencode.jsonc` in the parent directory of `tools/`, so `.config/opencode/opencode.jsonc`
+in this layout; override with `--opencode-config`), which must define a `pr-reviewer`
+agent. The script does not check the OpenRouter routing block; add it so requests keep the
+no-training, zero-retention routing. Add blocks like these to your own file; the
+`prompt` path must be absolute:
 
 ```jsonc
 "pr-reviewer": {
   "mode": "primary",
-  "model": "openrouter/<your-model>",
+  "model": "openrouter/deepseek/deepseek-v4.1-flash-1017",
   "steps": 50, // keep in sync with the step count named in review/pr-reviewer.md
   "prompt": "{file:/absolute/path/to/review/pr-reviewer.md}",
   "permission": {
@@ -106,8 +117,20 @@ block like this one to your own file; the `prompt` path must be absolute:
 }
 ```
 
+```jsonc
+"provider": {
+  "openrouter": {
+    "options": {
+      "extraBody": {"provider": {"zdr": true, "data_collection": "deny"}}
+    }
+  }
+}
+```
+
 Without `--post` the script only prints the verdict. Tests: `python3 tools/test_pr_review.py`
-(seven tests that read the real `opencode.jsonc` are skipped when it is absent).
+(seven tests that read the real `opencode.jsonc` are skipped when it is absent; they pin
+the model slug above and the `zdr` and `data_collection` routing values, so change
+them together with the config).
 
 ## Known gaps
 

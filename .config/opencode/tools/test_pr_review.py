@@ -275,12 +275,16 @@ class ModelTimeoutArgTest(unittest.TestCase):
     args = mod.build_parser().parse_args([URL, *flags])
     with tempfile.TemporaryDirectory() as tmp, \
         mock.patch.object(mod.subprocess, "run", fake_run), mock.patch.object(mod, "checkout_pr"), \
-        mock.patch.dict(os.environ, {"TMPDIR": tmp}):
+        mock.patch.dict(os.environ, {"TMPDIR": tmp, "OPENROUTER_API_KEY": "sk-test-key"}):
       mod.run_model(args, json.loads(GLOBAL_CONFIG_FIXTURE.replace("// комментарий, как в настоящем конфиге", "")
                                      .replace("/* блочный комментарий */", "")),
-                    SHA, DIFF, mod.parse_diff(DIFF), mod.PrText("t", "b", ""))
+                    SHA, DIFF, mod.parse_diff(DIFF), mod.PrText("t", "b", ""), None)
     self.assertEqual(len(seen), 1)
     return seen[0]
+
+  def test_run_model_does_not_reread_the_markers_file(self) -> None:
+    with mock.patch.dict(os.environ, {"PR_REVIEW_PERSONA_MARKERS": "/nonexistent/markers.txt"}):
+      self.assertEqual(self.passed_timeout(), 1200)
 
   def test_default_limit_is_1200_seconds(self) -> None:
     self.assertEqual(self.passed_timeout(), 1200)
@@ -755,11 +759,102 @@ os.execve("{REAL_GIT}", ["git", *sys.argv[1:]], env)
     rc, _, _ = self.run_script("--post", outputs=[out], env_extra=self.markers_env())
     self.assertEqual(rc, 0)
 
-  def test_missing_markers_file_skips_the_check_with_a_note(self) -> None:
+  def test_unset_markers_variable_skips_the_check_with_a_warning(self) -> None:
     out = json.dumps({"verdict": "issues", "summary": "zorblax", "findings": [finding(2)]})
-    rc, _, _ = self.run_script("--post", outputs=[out])
+    rc, summary, _ = self.run_script("--post", outputs=[out])
     self.assertEqual(rc, 0)
     self.assertIn("persona marker check skipped", self.stderr)
+    assert summary is not None
+    self.assertTrue(any("persona marker check skipped" in w for w in summary["warnings"]))  # type: ignore[attr-defined]
+
+  def assert_unusable_markers_abort(self, path: Path) -> None:
+    rc, _, calls = self.run_script("--post", "--merge", env_extra={"PR_REVIEW_PERSONA_MARKERS": str(path)})
+    self.assertEqual(rc, 2)
+    self.assertEqual(calls, [])  # отказ до первого вызова gh
+    self.assertIn("PR_REVIEW_PERSONA_MARKERS is unusable", self.stderr)
+
+  def test_missing_markers_path_aborts(self) -> None:
+    self.assert_unusable_markers_abort(self.tmp / "nonexistent.txt")
+
+  def test_markers_path_that_is_a_directory_aborts(self) -> None:
+    self.assert_unusable_markers_abort(self.tmp)
+
+  def test_empty_markers_file_aborts(self) -> None:
+    path = self.tmp / "empty.txt"
+    path.write_text("\n  \n")
+    self.assert_unusable_markers_abort(path)
+
+  def test_invalid_marker_regex_aborts(self) -> None:
+    path = self.tmp / "bad.txt"
+    path.write_text("zorblax\n(unclosed\n")
+    self.assert_unusable_markers_abort(path)
+
+  def test_non_utf8_markers_file_aborts(self) -> None:
+    path = self.tmp / "latin.txt"
+    path.write_bytes(b"\xff\xfe\x80zorblax\n")
+    self.assert_unusable_markers_abort(path)
+
+  def test_empty_markers_variable_aborts(self) -> None:
+    rc, _, calls = self.run_script("--post", env_extra={"PR_REVIEW_PERSONA_MARKERS": ""})
+    self.assertEqual(rc, 2)
+    self.assertEqual(calls, [])
+
+  def test_marker_line_invalid_alone_aborts(self) -> None:
+    path = self.tmp / "dead.txt"
+    path.write_text("zorblax\\\n\\bwhole\\b\n")
+    self.assert_unusable_markers_abort(path)
+    self.assertIn("line 1", self.stderr)
+
+  def test_invalid_marker_line_number_counts_blank_lines(self) -> None:
+    path = self.tmp / "blank.txt"
+    path.write_text("zorblax\n\n\n(bad\n")
+    self.assert_unusable_markers_abort(path)
+    self.assertIn("line 4", self.stderr)
+
+  def assert_markers_file_rejects(self, content: str, summary: str) -> None:
+    path = self.tmp / "m.txt"
+    path.write_text(content)
+    bad = json.dumps({"verdict": "issues", "summary": summary, "findings": [finding(2)]})
+    rc, _, calls = self.run_script("--post", outputs=[bad], env_extra={"PR_REVIEW_PERSONA_MARKERS": str(path)})
+    self.assertEqual(rc, 4)
+    self.assert_no_writes(calls)
+
+  def test_inline_flag_on_second_line_still_rejects(self) -> None:
+    self.assert_markers_file_rejects("zorblax\n(?i)whole\n", "the WHOLE word")
+
+  def test_backreference_on_second_line_still_rejects(self) -> None:
+    self.assert_markers_file_rejects("(zor)blax\n(.)\\1\\1\n", "aaa")
+
+  def test_verbose_flag_on_first_line_does_not_leak_to_the_next(self) -> None:
+    self.assert_markers_file_rejects("(?x)zorblax\ntwo words\n", "two words here")
+
+  def test_marker_line_with_trailing_space_still_rejects(self) -> None:
+    self.assert_markers_file_rejects("zorblax \n", "zorblax.")
+
+  def test_unknown_user_in_gh_config_dir_aborts(self) -> None:
+    rc, _, calls = self.run_script("--post", env_extra={"PR_REVIEW_GH_CONFIG_DIR": "~nosuchuser_zz/dir"})
+    self.assertEqual(rc, 2)
+    self.assertEqual(calls, [])
+
+  def test_tilde_gh_config_dir_is_expanded(self) -> None:
+    _, _, calls = self.run_script("--post", env_extra={"PR_REVIEW_GH_CONFIG_DIR": "~/x"})
+    self.assertTrue(calls)
+    for c in calls:
+      if c["tool"] in ("gh", "git"):
+        self.assertEqual(c["config_dir"], str(Path.home() / "x"))
+
+  def test_marker_line_with_overflowing_repeat_aborts(self) -> None:
+    path = self.tmp / "big.txt"
+    path.write_text("a{99999999999}\n")
+    self.assert_unusable_markers_abort(path)
+
+  def test_markers_file_with_bom_still_rejects(self) -> None:
+    path = self.tmp / "bom.txt"
+    path.write_bytes(b"\xef\xbb\xbfzorblax\n")
+    bad = json.dumps({"verdict": "issues", "summary": "zorblax", "findings": [finding(2)]})
+    rc, _, calls = self.run_script("--post", outputs=[bad], env_extra={"PR_REVIEW_PERSONA_MARKERS": str(path)})
+    self.assertEqual(rc, 4)
+    self.assert_no_writes(calls)
 
   def test_summary_too_long_is_invalid(self) -> None:
     out = json.dumps({"verdict": "issues", "summary": "x" * 1001, "findings": [finding(2)]})
@@ -843,7 +938,7 @@ os.execve("{REAL_GIT}", ["git", *sys.argv[1:]], env)
     self.assertIn("new.py:1", payload["body"])  # LEFT на контекстной строке ушёл в тело
 
   # --- настоящий глобальный конфиг opencode ---
-  @unittest.skipUnless(OPENCODE_CONFIG.is_file(), "needs ~/.config/opencode/opencode.jsonc with the pr-reviewer block")
+  @unittest.skipUnless(OPENCODE_CONFIG.is_file(), "needs opencode.jsonc next to tools/ with the pr-reviewer block")
   def test_real_opencode_config_defines_a_read_only_pr_reviewer(self) -> None:
     agent = json.loads(strip_jsonc(OPENCODE_CONFIG.read_text()))["agent"]["pr-reviewer"]
     self.assertEqual(agent["model"], "openrouter/deepseek/deepseek-v4.1-flash-1017")
@@ -863,7 +958,7 @@ os.execve("{REAL_GIT}", ["git", *sys.argv[1:]], env)
     self.assertEqual(permission["external_directory"], {"*": "deny"})
     self.assertEqual(set(permission), {"*", "external_directory"} | allowed)
 
-  @unittest.skipUnless(OPENCODE_CONFIG.is_file(), "needs ~/.config/opencode/opencode.jsonc with the pr-reviewer block")
+  @unittest.skipUnless(OPENCODE_CONFIG.is_file(), "needs opencode.jsonc next to tools/ with the pr-reviewer block")
   def test_real_opencode_config_prompt_is_an_absolute_existing_file(self) -> None:
     # Скрипт кладёт копию конфига в другой каталог, поэтому относительный {file:./...} там ничего не найдёт.
     prompt = json.loads(strip_jsonc(OPENCODE_CONFIG.read_text()))["agent"]["pr-reviewer"]["prompt"]
@@ -872,13 +967,13 @@ os.execve("{REAL_GIT}", ["git", *sys.argv[1:]], env)
     assert m is not None
     self.assertTrue(Path(m.group(1)).is_file(), m.group(1))
 
-  @unittest.skipUnless(OPENCODE_CONFIG.is_file(), "needs ~/.config/opencode/opencode.jsonc with the pr-reviewer block")
+  @unittest.skipUnless(OPENCODE_CONFIG.is_file(), "needs opencode.jsonc next to tools/ with the pr-reviewer block")
   def test_prompt_states_the_step_budget_of_the_agent(self) -> None:
     config = json.loads(strip_jsonc(OPENCODE_CONFIG.read_text()))
     prompt = (OPENCODE_CONFIG.parent / "review/pr-reviewer.md").read_text()
     self.assertRegex(prompt, rf"\b{config['agent']['pr-reviewer']['steps']} steps\b")
 
-  @unittest.skipUnless(OPENCODE_CONFIG.is_file(), "needs ~/.config/opencode/opencode.jsonc with the pr-reviewer block")
+  @unittest.skipUnless(OPENCODE_CONFIG.is_file(), "needs opencode.jsonc next to tools/ with the pr-reviewer block")
   def test_real_opencode_config_puts_the_routing_block_where_the_request_body_takes_it(self) -> None:
     options = json.loads(strip_jsonc(OPENCODE_CONFIG.read_text()))["provider"]["openrouter"]["options"]
     # Ключ provider среди options самого провайдера opencode не читает: блок до OpenRouter не доходил.
@@ -888,7 +983,7 @@ os.execve("{REAL_GIT}", ["git", *sys.argv[1:]], env)
     self.assertIs(routing["zdr"], True)
     self.assertEqual(routing["data_collection"], "deny")
 
-  @unittest.skipUnless(OPENCODE_CONFIG.is_file(), "needs ~/.config/opencode/opencode.jsonc with the pr-reviewer block")
+  @unittest.skipUnless(OPENCODE_CONFIG.is_file(), "needs opencode.jsonc next to tools/ with the pr-reviewer block")
   def test_model_config_is_built_from_the_real_opencode_config_without_persona(self) -> None:
     rc, _, calls = self.run_script("--opencode-config", str(OPENCODE_CONFIG))
     self.assertEqual(rc, 0)
@@ -938,7 +1033,7 @@ os.execv("{REAL_OPENCODE}", ["opencode", *sys.argv[1:]])
     return m.group(1) + "/repo/calc.py"
 
   @unittest.skipUnless(REAL_OPENCODE and REAL_GIT, "opencode and git are not installed")
-  @unittest.skipUnless(OPENCODE_CONFIG.is_file(), "needs ~/.config/opencode/opencode.jsonc with the pr-reviewer block")
+  @unittest.skipUnless(OPENCODE_CONFIG.is_file(), "needs opencode.jsonc next to tools/ with the pr-reviewer block")
   def test_real_opencode_gets_the_routing_block_and_stays_inside_its_sandbox(self) -> None:
     def reply(requests: list[dict[str, Any]], home: Path) -> dict[str, Any]:
       outside = ["/etc/hosts", f"{home}/.config/gh-codex-bot/hosts.yml", f"{home}/.local/share/opencode/tool-output/canary.txt"]
@@ -966,7 +1061,7 @@ os.execv("{REAL_OPENCODE}", ["opencode", *sys.argv[1:]])
     self.assertFalse((home / ".local/state").exists())
 
   @unittest.skipUnless(REAL_OPENCODE and REAL_GIT, "opencode and git are not installed")
-  @unittest.skipUnless(OPENCODE_CONFIG.is_file(), "needs ~/.config/opencode/opencode.jsonc with the pr-reviewer block")
+  @unittest.skipUnless(OPENCODE_CONFIG.is_file(), "needs opencode.jsonc next to tools/ with the pr-reviewer block")
   def test_real_opencode_tells_the_model_to_answer_when_the_step_budget_is_spent(self) -> None:
     steps = json.loads(strip_jsonc(OPENCODE_CONFIG.read_text()))["agent"]["pr-reviewer"]["steps"]
 
@@ -1153,7 +1248,21 @@ os.execv("{REAL_OPENCODE}", ["opencode", *sys.argv[1:]])
     self.assertEqual(rc, 0)
     self.assertEqual(len(self.gh_calls(calls, "pr", "merge")), 1)
     assert out is not None
-    self.assertTrue(out["warnings"])
+    self.assertEqual(len(out["warnings"]), 2)  # type: ignore[arg-type]
+    self.assertTrue(any("persona marker check skipped" in w for w in out["warnings"]))  # type: ignore[attr-defined]
+    self.assertTrue(any("no CI checks" in w for w in out["warnings"]))  # type: ignore[attr-defined]
+
+  def test_gh_config_dir_variable_reaches_every_gh_and_git_call(self) -> None:
+    _, _, calls = self.run_script("--post", env_extra={"PR_REVIEW_GH_CONFIG_DIR": "/custom"})
+    self.assertTrue(calls)
+    for c in calls:
+      if c["tool"] in ("gh", "git"):
+        self.assertEqual(c["config_dir"], "/custom", c)
+
+  def test_relative_gh_config_dir_aborts(self) -> None:
+    rc, _, calls = self.run_script("--post", env_extra={"PR_REVIEW_GH_CONFIG_DIR": "relative/dir"})
+    self.assertEqual(rc, 2)
+    self.assertEqual(calls, [])
 
   def test_neutral_and_skipped_checks_allow_merge(self) -> None:
     rollup = [{"status": "COMPLETED", "conclusion": "NEUTRAL"}, {"status": "COMPLETED", "conclusion": "SKIPPED"},
