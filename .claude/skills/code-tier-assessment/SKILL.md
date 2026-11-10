@@ -15,16 +15,6 @@ Classify every slice before writing its brief, once you've looked at the affecte
 | T2 | `code-writer-t2` | sonnet | medium | ~50%, the default |
 | T3 | `code-writer-t3` | sonnet | max | ~20% |
 
-Codex uses separate model settings:
-
-| Tier | Agent | Model | Effort |
-|---|---|---|---|
-| T1 | `code-writer-t1` | gpt-6-luna | medium |
-| T2 | `code-writer-t2` | gpt-6.1-terra | medium |
-| T3 | `code-writer-t3` | gpt-6.1-sol | medium |
-
-The first table in this section defines the Claude Code settings.
-
 `opus` or `fable` never writes code — it stays reserved for `reviewer`, `planner`, and `magi-*`. Whether `haiku` honors the `effort` setting is unverified. Target shares are a calibration goal, checked against `python3 ~/.claude/tools/first-pass.py` (split by tier), not a quota to force on any single task.
 
 ## Default: T2
