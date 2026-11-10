@@ -1,6 +1,6 @@
 *.pyc
 __pycache__/
 persona.md
-persona-markers*
+*persona-markers*
 *.bak*
 .harness-backups/
