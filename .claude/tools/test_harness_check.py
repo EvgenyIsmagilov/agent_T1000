@@ -3,6 +3,7 @@
 
 The ROOT holds symlinks to the real config entries. Only a directory that a test changes is a copy.
 """
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -34,15 +35,30 @@ def make_root(root: Path, copies: set[Path]) -> Path:
 def copy_jsonc(root: Path) -> Path:
     """Replace the opencode.jsonc link under `root` with a copy and return the copy."""
     jsonc = root / ".config/opencode/opencode.jsonc"
-    text = jsonc.read_text()
+    real = jsonc.resolve()
     jsonc.unlink()  # ссылка ведёт в настоящий конфиг, поэтому заменяем её копией в ROOT
-    jsonc.write_text(text)
+    shutil.copyfile(real, jsonc)  # текст не держим в локальной переменной: pytest -l напечатал бы его вместе с ключом
     return jsonc
+
+
+def text_digest(path: Path) -> str:
+    """Return the sha256 of the text of the file, so that two versions compare without being printed."""
+    return hashlib.sha256(path.read_text().encode()).hexdigest()
 
 
 def problem_lines(stdout: str) -> list[str]:
     """Return the problem lines that the script prints as " - <text>"."""
     return [line[3:] for line in stdout.splitlines() if line.startswith(" - ")]
+
+
+def leaks_file_text(error: Exception, path: Path) -> bool:
+    """Return True if the message of `error` repeats a run of 20 characters from the file at `path`.
+
+    The check lives here, not in an assert: a failing assert prints its operands, and the text must not reach the output.
+    """
+    message = str(error)
+    text = path.read_text()
+    return any(message[i:i + 20] in text for i in range(len(message) - 19))
 
 
 def change_first_line(text: str, heading: str) -> str:
@@ -78,9 +94,10 @@ class HarnessCheckTests(unittest.TestCase):
     def edit(self, path: Path, change: Callable[[str], str]) -> None:
         # Писать можно только в копию под ROOT, а не в файл по ссылке из реального конфига.
         self.assertTrue(path.resolve().is_relative_to(self.root.resolve()), str(path))
-        old = path.read_text()
-        path.write_text(change(old))
-        self.assertNotEqual(path.read_text(), old)  # иначе тест ничего не проверяет
+        before = text_digest(path)
+        path.write_text(change(path.read_text()))
+        # Хеши вместо текстов: провал assertNotEqual напечатал бы оба текста, а в opencode.jsonc лежит ключ API.
+        self.assertTrue(text_digest(path) != before, f"edit changed nothing in {path.name}")  # иначе тест ничего не проверяет
 
     def check(self, root: Path, code: int) -> list[str]:
         """Run the script on `root`, assert the exit code, and return the problem lines."""
@@ -90,6 +107,14 @@ class HarnessCheckTests(unittest.TestCase):
 
     def test_real_configs_have_no_problems(self) -> None:
         self.assertEqual(self.check(make_root(self.root, set()), 0), [])
+
+    def test_edit_that_changes_nothing_fails_without_file_text(self) -> None:
+        jsonc = copy_jsonc(make_root(self.root, set()))
+        with self.assertRaises(AssertionError) as caught:
+            self.edit(jsonc, lambda t: t)
+        # Порядок важен: assertTrue с `in` напечатал бы сообщение, если бы в нём был текст конфига.
+        self.assertFalse(leaks_file_text(caught.exception, jsonc), f"the message repeats text of {jsonc.name}")
+        self.assertTrue(jsonc.name in str(caught.exception), "the message does not name the file")
 
     def test_changed_line_in_constraints_names_the_section(self) -> None:
         root = make_root(self.root, {HOME / ".claude/agents"})
