@@ -52,16 +52,31 @@ def problem_lines(stdout: str) -> list[str]:
     return [line[3:] for line in stdout.splitlines() if line.startswith(" - ")]
 
 
-def leaks_file_text(error: Exception, path: Path) -> bool:
-    """Return True if the message of `error`, or a local of a frame in its traceback, repeats a run of 20 characters from the file at `path`.
+def leaks_file_text(error: BaseException, path: Path) -> bool:
+    """Return True if a message, or a local of a traceback frame, in the chain of `error` repeats a run of 20 characters from the file at `path`.
 
+    The chain is followed as the standard renderers do: `__cause__` always, `__context__` unless `__suppress_context__`.
     pytest -l and unittest --locals print these locals.
+    The path itself is cut out of the text and the parts first: repr() of a Path local holds it, and a config may name its own path.
     The check lives here, not in an assert: a failing assert prints its operands, and the text must not reach the output.
     """
-    text = path.read_text()
-    shown = [str(error)]
-    shown += [repr(value) for frame, _ in traceback.walk_tb(error.__traceback__) for value in frame.f_locals.values()]
-    return any(part[i:i + 20] in text for part in shown for i in range(len(part) - 19))
+    own_path = str(path)
+    text = path.read_text().replace(own_path, "\0")
+    shown: list[str] = []
+    pending: list[BaseException | None] = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        shown.append(str(current))
+        shown += [repr(value) for frame, _ in traceback.walk_tb(current.__traceback__) for value in frame.f_locals.values()]
+        pending.append(current.__cause__)
+        if not current.__suppress_context__:
+            pending.append(current.__context__)
+    parts = [part.replace(own_path, "\0") for part in shown]
+    return any(part[i:i + 20] in text for part in parts for i in range(len(part) - 19))
 
 
 def change_first_line(text: str, heading: str) -> str:
@@ -126,7 +141,8 @@ class HarnessCheckTests(unittest.TestCase):
     def test_write_error_in_edit_keeps_file_text_out_of_traceback(self) -> None:
         jsonc = copy_jsonc(make_root(self.root, set()))
         jsonc.chmod(0o444)
-        # ignore_errors=True в setUp скрыл бы сбой rmtree, и копия конфига с ключом осталась бы во временном каталоге.
+        # Возвращаем права: на Windows rmtree не удалит файл только для чтения, а ignore_errors=True в setUp скрыл бы сбой,
+        # и копия конфига с ключом осталась бы во временном каталоге. На macOS rmtree справляется и так.
         self.addCleanup(jsonc.chmod, 0o644)
         try:
             self.edit(jsonc, lambda t: t + " ")
