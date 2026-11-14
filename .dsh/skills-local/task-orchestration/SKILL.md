@@ -58,13 +58,13 @@ Every delegation costs tokens and wall-clock, and every report lands back in you
 | `reviewer` | `qwen/qwen3.8-max-0902` | xhigh |
 | `planner`, `bug-investigator`, `docs-researcher` | `~google/gemini-pro-latest` | high |
 | `finding-verifier` | `~z-ai/glm-latest` | low |
-| `test-runner`, `web-researcher` | `openrouter/~deepseek/deepseek-v4-flash-latest` | — |
+| `test-runner`, `web-researcher` | local `dspark/deepseek-v4-flash` | — |
 
 Writers are in **Executor tiers**. The table mirrors `~/.claude/tools/gen_dsh.py`; if they disagree, the generator wins.
 
 - At most 3 subagents in flight at once, and only when each answers a different question.
 - No role has a turn limit here. A brief must name the condition that ends the subtask, or a run can spin until it exhausts the model's output budget.
-- Prefer the flash-model roles (`test-runner`, `web-researcher`) for cheap, noisy work.
+- Prefer the local `dspark` roles (`test-runner`, `web-researcher`) for cheap, noisy work; they cost no OpenRouter spend.
 - Never pay twice for the same evidence. A check `code-writer` ran and reported does not get rerun by `test-runner`, and a file a subagent summarized does not get re-read in the main context.
 
 ## Executor tiers
@@ -94,16 +94,30 @@ Before delegating non-trivial work, compose one structured brief and reuse it fo
 - `files_to_inspect`: the specific files to read before changing anything.
 - `changes`: per file, a `file` and a one-line `action` — what must change, not how.
 - `risks`: concrete ways the change could break something else.
+- `invariant_paths`: for `T2` and `T3`, every code path and twin implementation (for example a C# copy and a GDScript copy) that holds the invariant this slice touches. Find them by search, not from memory. If there is only one, write `none` and the reason. When hooks are active, a gate refuses `code-writer-t2` and `code-writer-t3` without this line, `data_sample`, `spec_check`, and `divisible`.
+- `data_sample`: for `T2` and `T3`, the real sample (a file, a record, a query result) that your assumptions about an external data format were checked against. Write `n/a` if the slice reads no external format.
+- `spec_check`: for `T2` and `T3`, the ticket or requirement you compared the brief with, and a statement that the brief contradicts neither it nor itself. If there is no ticket, write `none` and the reason.
+- `divisible`: for `T2` and `T3`, `yes` or `no`, then the reason. Example: `divisible: no — one parser, every change goes through the same function`. Apply the test in **Slicing multi-file work**. The tier records how difficult the slice is; this field records only whether you can cut it. When hooks are active, a gate checks this line for `code-writer-t2/t3`. It refuses the call if the value does not start with `yes` or `no` or has no reason on the same line.
+- `volume`: for `T2` and `T3`, the number of files in `changes` and the total line count of the files in `files_to_inspect`. Count the lines with `wc -l`. Example: `volume: 9 files, 4200 lines`. **Slicing multi-file work** tells you what to do with these numbers.
 - `test_scope`: for `T2` and `T3`, the public surface the tests must go through, and which `risks` must be covered as failure modes. When the project has no test setup, say so. Omit for `T1`.
-- `acceptance_criteria`: how to verify done (build, specific test, observed behavior).
+- `acceptance_criteria`: how to verify done (build, specific test, observed behavior). A criterion checks behavior on a fixture or a controlled input, not a snapshot of live data.
 
 If something needed for the brief is missing, ask the user instead of guessing. If you filled gaps by inference, summarize the assumptions and get the user to confirm before delegating.
 
-When the work comes from a subagent report — a reviewer finding or a `bug-investigator` diagnosis — forward the report's own section verbatim as the brief, adding only the objective and the files in scope. Carry the reporter's qualifiers: severity, confidence, and a diagnosis status of `PROBABLE` or `INCONCLUSIVE`. Do not delegate a fix from an `INCONCLUSIVE` or `BLOCKED` report.
+When the work comes from a subagent report — a reviewer finding or a `bug-investigator` diagnosis — forward the report's own section verbatim as the brief, adding only the objective and the files in scope. For a `T2` or `T3` slice, still copy the slice's `invariant_paths`, `data_sample`, `spec_check`, and `divisible` lines into it. Carry the reporter's qualifiers: severity, confidence, and a diagnosis status of `PROBABLE` or `INCONCLUSIVE`. Do not delegate a fix from an `INCONCLUSIVE` or `BLOCKED` report.
 
 ## Slicing multi-file work
 
 - One slice = one coherent change with its own acceptance criteria and no file shared with another in-flight slice.
+- A slice is divisible only if each part of the cut meets three conditions. Each part has its own acceptance criteria. No part shares a file with another part. All paths from `invariant_paths` are in the same part. Never cut across an invariant. Two slices that each change half of one invariant leave the tree broken between them. A small slice with difficult logic is `divisible: no` and stays whole. Its difficulty goes into the tier, not into a cut.
+- Measure the volume of each `T2` or `T3` slice before you delegate it, and write it in the `volume` line. If a `divisible: yes` slice crosses a threshold, cut it before you delegate it. The thresholds are more than 8 files in `changes` or more than 3000 lines to read. These thresholds are starting values and are not calibrated yet. If the slice is `divisible: no`, do not cut it. Do these steps instead:
+  1. Give an anchor in `files_to_inspect` for each place that the slice changes.
+  2. If the files to read are over the threshold, have one cheap read-only subagent summarize them first. Put the summary in `context`.
+  3. If the approach is open, run `planner` before you write the brief.
+- After a `T2` or `T3` run, look for two signs that the slice was too large for one run:
+  - the run used more than 80% of its tier's turn budget. The DSH run log has no turns, so use this sign only if the run reports its turn count.
+  - the run returned `PARTIAL` because its budget ran out.
+  If the slice needs another attempt after such a run, check `divisible` again before you write the next brief. If it is `yes`, classify the failure as `slicing`. Then recut the slice and reset the attempt counter. Do this at the first failure; do not wait for step 8. If it is `no`, classify the failure by step 8 as usual.
 - Order slices by dependency: schemas, contracts, and interfaces first; callers after; tests and docs last.
 - Run at most one `code-writer` at a time. Only read-only work parallelizes.
 - Validate a slice that changes behavior before starting the next one. Never stack unverified slices.
@@ -167,7 +181,7 @@ A valid `PARTIAL` is a legitimate report. An empty report is unusable; a malform
 
 ## What DSH does and does not enforce
 
-- **Hooks** run only if the profile mounts `@deepseek-ai/dsh-hooks-claude-code` with `~/.claude/hooks/dsh-hooks.json`, through the adapter `~/.claude/hooks/dsh_adapter.py`. When active they cover: Trino project scope (the DDL/DML guard lives in the project's own repo hook and does not run here), protected-config edits, whole-file reads over 350 lines, and the delegation gate (doctrine loaded + `slice_id`) on the ten role tools and on the generic `subagent` tool. `subagent_fork` is disabled in the profile. Whether hooks fire for tool calls made inside a subagent is unverified.
+- **Hooks** run only if the profile mounts `@deepseek-ai/dsh-hooks-claude-code` with `~/.claude/hooks/dsh-hooks.json`, through the adapter `~/.claude/hooks/dsh_adapter.py`. When active they cover: Trino project scope (the DDL/DML guard lives in the project's own repo hook and does not run here), protected-config edits, whole-file reads over 350 lines, and the delegation gate (doctrine loaded + `slice_id`, plus `invariant_paths`, `data_sample`, `spec_check`, and `divisible` for `code-writer-t2/t3`) on the ten role tools and on the generic `subagent` tool. `subagent_fork` is disabled in the profile. Whether hooks fire for tool calls made inside a subagent is unverified.
 - **Delegation gate:** it remembers that `task-orchestration` was loaded in `/tmp/dsh-claude-state-<uid>/` per session. A subagent has its own session, so it loads the skill itself if it delegates. If that state cannot be written, gated calls are denied with the path named — fix the path, do not route around the gate.
 - **Not enforced at all here:** the reviewer's read-only `bash` allowlist (DSH tool events do not say which role made the call). The `reviewer` must keep to read-only commands by its own instructions.
 - **Run log:** when hooks are active, role calls are logged with role, `slice_id`, and report-contract status — no tokens, no turns. Under DSH's default hook sandbox `~/.claude/logs` is not writable, so the log lands in `/tmp/dsh-claude-state-<uid>/dsh-subagent-runs.jsonl`, which macOS may clean. `agent-stats.py` and `first-pass.py` do not read it.

@@ -6,7 +6,7 @@
 
 Reach for this file when untrusted requests, messages, files, tenant state, or agent work can consume CPU, memory, disk, connections, worker slots, paid APIs, or queue capacity, or can deadlock/crash a shared service. This domain distinguishes a source-reviewable availability vulnerability from a general performance issue. Never validate by stressing a shared or live service.
 
-A reachable fatal error belongs here for shared impact even when the underlying parser defect is a separate finding.
+Use `memory-safety-and-binary.md` for memory-integrity defects and `protocols-rpc-and-messaging.md` for broker delivery logic. A reachable fatal error belongs here for shared impact even when the underlying parser defect is a separate finding.
 
 ## Core discipline
 

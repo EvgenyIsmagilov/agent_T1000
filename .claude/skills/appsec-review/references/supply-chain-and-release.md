@@ -4,7 +4,7 @@
 
 #### When to use this file
 
-Reach for this file when the target resolves dependencies, builds from untrusted contributions, runs CI, creates release artifacts, signs or promotes builds, loads plugins, or updates deployed software. This domain covers trust handoffs from source and dependency to the artifact a user runs. Use `cloud-and-deployment.md` for runtime workload authority.
+Reach for this file when the target resolves dependencies, builds from untrusted contributions, runs CI, creates release artifacts, signs or promotes builds, loads plugins, or updates deployed software. This domain covers trust handoffs from source and dependency to the artifact a user runs. Use `memory-safety-and-binary.md` for flaws inside a local binary loader and `cloud-and-deployment.md` for runtime workload authority.
 
 Split large targets into dependency resolution, CI isolation, artifact provenance, release authorization, and updater/plugin trust.
 

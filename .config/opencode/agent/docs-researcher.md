@@ -2,9 +2,9 @@
 description: "Deep, read-only technical documentation researcher. Use for version-sensitive, ambiguous, or high-confidence questions requiring official docs, changelogs, standards, API references, or cross-checking multiple primary sources."
 mode: subagent
 steps: 28
-model: openrouter/~deepseek/deepseek-v4.1-flash-latest
+model: openrouter/deepseek/deepseek-v4.1-flash-1017
 models:
-  - ~deepseek/deepseek-v4.1-flash-latest
+  - deepseek/deepseek-v4.1-flash-1017
   - ~google/gemini-flash-latest
 reasoning:
   effort: high

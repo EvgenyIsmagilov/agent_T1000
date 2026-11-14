@@ -14,7 +14,7 @@ flowchart TD
 
     subgraph Gates["Gates — PreToolUse"]
         RO["require-orchestration.py<br/>on Agent: refuses to delegate until<br/>task-orchestration is loaded this session"]
-        CFS["check-file-size.py<br/>on Read: refuses a whole-file read &gt;350 lines"]
+        CFS["check-file-size.py<br/>on Read: refuses a read &gt;350 lines,<br/>gives an outline inside cwd"]
         TG["trino-guardrail.py<br/>on Trino execute/explain: text guard on DDL/DML"]
     end
 
@@ -31,7 +31,7 @@ flowchart TD
     subgraph Validate["Validation & review"]
         TR["test-runner<br/>haiku · low"]
         BI["bug-investigator<br/>sonnet · high<br/>cause unknown → diagnoses it"]
-        CR["reviewer<br/>opus · xhigh<br/>code-review + sql-review / appsec-review as needed<br/>cause already found → fix goes straight to executor"]
+        CR["reviewer<br/>fable 5.1 · xhigh<br/>code-review + sql-review / appsec-review as needed<br/>cause already found → fix goes straight to executor"]
     end
 
     subgraph Research["Research & search (read-only)"]

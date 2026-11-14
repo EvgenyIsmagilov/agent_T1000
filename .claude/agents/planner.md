@@ -2,7 +2,7 @@
 name: planner
 description: Read-only implementation planner for code changes whose approach is genuinely open — several modules, a public API, a schema, data or migrations, security, concurrency, or unclear requirements. Investigates the repository and returns a sliced plan with risks, dependencies, and observable acceptance criteria. Never edits files or implements the plan.
 tools: Read, Grep, Glob, Bash, Skill
-model: sonnet
+model: claude-fable-5-2
 permissionMode: default
 maxTurns: 30
 effort: high

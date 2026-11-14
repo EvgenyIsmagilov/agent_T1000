@@ -1,6 +1,6 @@
 ---
 name: appsec-review
-description: "Security review of a code or configuration change: access control, injection (including SQL), secrets, personal-data exposure, dependencies, CI and release, LLM/agent/MCP code, and container or server configuration. Use as part of a code review whenever the diff touches authentication, authorization, secrets, untrusted input, data exposure, dependencies, CI workflows, prompt assembly or model tool calls, Dockerfiles, compose files, reverse proxies, SSH, firewall, or systemd units. Read-only: proves risks by reading and safe local checks, never by attacking a real system."
+description: "Security review of a code or configuration change: access control, injection (including SQL), secrets, personal-data exposure, dependencies, CI and release, LLM/agent/MCP code, and container or server configuration. Use as part of a code review whenever the diff touches authentication, authorization, secrets, untrusted input, data exposure, dependencies, CI workflows, prompt assembly or model tool calls, native C/C++ or unsafe code, FFI, parsers of untrusted bytes, network protocols, queues, webhooks, Dockerfiles, compose files, reverse proxies, SSH, firewall, or systemd units. Read-only: proves risks by reading and safe local checks, never by attacking a real system."
 ---
 
 # Application security review
@@ -9,7 +9,7 @@ This skill adds a security lens to a review; it does not replace `code-review`. 
 
 ## When it applies
 
-Load it when the diff changes any of: login, sessions, tokens, or permission checks; code that reads external input (HTTP, CLI args, files, queue messages, webhooks, LLM output); code that builds SQL, shell commands, paths, URLs, templates, or deserializes data; secrets, credentials, or their loading; logging of user or production data; dependency manifests and lockfiles; Dockerfiles, compose files, CI configs; nginx/caddy, SSH, firewall, systemd, cron; prompt assembly, model tool calls, agent memory, MCP servers or clients, and the hooks or permission rules that gate an agent; caches, exports, retention, or deletion of access-controlled data. A diff that touches none of these does not need it.
+Load it when the diff changes any of: login, sessions, tokens, or permission checks; code that reads external input (HTTP, CLI args, files, queue messages, webhooks, LLM output); code that builds SQL, shell commands, paths, URLs, templates, or deserializes data; secrets, credentials, or their loading; logging of user or production data; dependency manifests and lockfiles; Dockerfiles, compose files, CI configs; nginx/caddy, SSH, firewall, systemd, cron; prompt assembly, model tool calls, agent memory, MCP servers or clients, and the hooks or permission rules that gate an agent; native C/C++ or C# `unsafe` code, FFI, and parsers of untrusted bytes; network protocols, multiplayer RPC, queues, and webhooks; caches, exports, retention, or deletion of access-controlled data. A diff that touches none of these does not need it.
 
 ## Map the surface first
 
@@ -33,6 +33,8 @@ The checks below cover every security diff. When the surface map hits one of the
 | IAM, infrastructure as code, containers, Kubernetes, serverless, ingress, metadata endpoints, runtime config | `references/cloud-and-deployment.md` |
 | Sessions, cookies, CSRF, JWT, OAuth/OIDC, SAML, MFA, password recovery, API keys, mTLS, HTTP parsing or caching | `references/web-protocol-and-auth.md` |
 | Multi-tenant or ACL'd stores, derived copies (cache, search, analytics), object links, export, backup, migration, deletion, retention | `references/data-isolation-and-lifecycle.md` |
+| C/C++ or C# `unsafe` code, P/Invoke and other FFI, Godot engine modules and GDExtension, native parsers and decoders of untrusted bytes (save files, assets, network packets), shared-state threads, plugin or library loading | `references/memory-safety-and-binary.md` |
+| Webhooks, queues, brokers, pub/sub, gRPC, Protobuf, custom network protocols, Godot multiplayer RPC (`@rpc`), message replay, ordering, or idempotency | `references/protocols-rpc-and-messaging.md` |
 | Untrusted work that consumes shared CPU, memory, disk, connections, workers, queues, quotas, or paid spend (heavy Trino queries included) | `references/resource-exhaustion-and-availability.md` |
 
 The references come from a whole-codebase audit workflow; use their attack classes and validation rules, not their process.
@@ -51,6 +53,7 @@ The references come from a whole-codebase audit workflow; use their attack class
 - Shell: no `shell=True` or `os.system` with untrusted parts; arguments passed as a list.
 - Paths: user-controlled paths are normalized and confined to the intended directory (traversal via `..`, absolute paths, symlinks).
 - Deserialization: no `pickle`, `yaml.load` without `SafeLoader`, or `eval`/`exec` on untrusted data.
+- XML: a parser that reads untrusted XML does not resolve external entities or DTDs (XXE) — `defusedxml` in Python, `DtdProcessing = DtdProcessing.Prohibit` and no `XmlResolver` in C#. A finding needs a traced path from untrusted XML to that parser.
 - Server-side requests: URLs from input cannot reach internal hosts, cloud metadata endpoints, or `file://` (SSRF).
 - Templates and output: user data is escaped for its context (HTML, headers, logs — log injection via newlines).
 - LLM output fed into any of the above is untrusted input too.

@@ -1,6 +1,9 @@
 *.pyc
 __pycache__/
-persona.md
-persona-markers.txt
+*persona.md*
+*persona-markers*
 *.bak*
 .harness-backups/
+/.claude/agents/pr-review-local.md
+/.claude/agents/magi-*
+/.claude/skills/magi/

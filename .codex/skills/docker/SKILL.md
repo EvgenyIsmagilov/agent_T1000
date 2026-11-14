@@ -47,6 +47,8 @@ Do not add a fake health check to satisfy a checklist; explain when a reliable c
 
 Do not assume an `unhealthy` status automatically restarts a Compose container. Treat health status as a signal for orchestration and alerts unless restart behavior is explicitly implemented.
 
+If a service must wait until a dependency is ready, use `depends_on` with `condition: service_healthy`. A plain `depends_on` waits only until the dependency container starts, not until it can serve. This condition needs a health check on the dependency; if that service has no reliable check, say so instead of adding a fake one.
+
 ## Volumes
 
 This section covers container storage. For choosing the underlying disk (SSD vs HDD) and for host backups, see the `infra` skill.
@@ -65,6 +67,8 @@ For every persistent path, know what data it holds, whether it can be recreated,
 - Set resource limits or reservations when supported and meaningful.
 - Run as a non-root user when the image and workload allow it.
 - Do not bake secrets into images or commit them to Compose files.
+- Keep a `.dockerignore` next to each Dockerfile. Exclude `.git`, `.env` and other secret files, dependency directories, caches, and test artifacts. Without it, `COPY . .` can put a `.env` file into an image layer.
+- Keep `.env` out of Git (`.gitignore`). Commit a `.env.example` that lists every variable the Compose file reads, with placeholder values only.
 - Mount filesystems read-only where writes are unnecessary.
 - Expose only required ports; prefer internal Docker networks for service-to-service traffic.
 - Keep logs bounded with rotation or an external logging system.
@@ -72,6 +76,11 @@ For every persistent path, know what data it holds, whether it can be recreated,
 - Preserve signal handling and use an appropriate init process when the application does not reap child processes correctly.
 
 ## Building images
+
+Structure a Dockerfile for small images and a reliable build cache:
+
+- Use a multi-stage build when the build needs compilers, build tools, or dev dependencies. Copy only the runtime artifacts into the final stage.
+- Copy the dependency manifests (`pyproject.toml` and `uv.lock`, `requirements.txt`, `package.json` and its lockfile) and install dependencies before you copy the source code. Then a source change does not invalidate the dependency layer.
 
 Do not build images on the Raspberry Pi home server (`rpi`). A build pins all four cores and hammers the USB-attached SSD at the same time; the combined current draw sags the 5V rail, and undervoltage is exactly the condition that precedes USB disk drops on that box.
 

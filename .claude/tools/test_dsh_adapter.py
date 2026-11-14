@@ -22,6 +22,7 @@ import sys
 import tempfile
 import uuid
 from dataclasses import dataclass
+from fnmatch import fnmatch
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
@@ -75,18 +76,28 @@ def default_state_env(home: Path) -> dict[str, str]:
 
 
 def run_adapter(
-  target: str, payload: object, home: Path, adapter: Path = ADAPTER, env: dict[str, str] | None = None
+  target: str, payload: object, home: Path, adapter: Path = ADAPTER, env: dict[str, str] | None = None,
+  workdir: Path | None = None,
 ) -> Result:
+  """`workdir` is the directory the adapter starts in, as DSH starts it; the caller's directory when None."""
   stdin = payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")
   argv = [sys.executable, str(adapter)] + ([target] if target else [])
-  return subprocess.run(argv, input=stdin, capture_output=True, env=make_env(home) if env is None else env, timeout=60)
-
-
-def run_claude_hook(name: str, payload: Payload, home: Path) -> Result:
-  """The same hook with a Claude payload and no adapter: the reference the adapter must reproduce."""
   return subprocess.run(
-    [sys.executable, str(HOOKS / f"{name}.py")], input=json.dumps(payload).encode("utf-8"),
-    capture_output=True, env=make_env(home), timeout=60,
+    argv, input=stdin, capture_output=True, env=make_env(home) if env is None else env, cwd=workdir, timeout=60
+  )
+
+
+def run_claude_hook(
+  name: str, payload: object, home: Path, env: dict[str, str] | None = None, workdir: Path | None = None
+) -> Result:
+  """The same hook with a Claude payload and no adapter: the reference the adapter must reproduce.
+
+  `workdir` is the directory the hook process starts in; the caller's directory when None.
+  """
+  stdin = payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")
+  return subprocess.run(
+    [sys.executable, str(HOOKS / f"{name}.py")], input=stdin,
+    capture_output=True, env=make_env(home) if env is None else env, cwd=workdir, timeout=60,
   )
 
 
@@ -219,9 +230,12 @@ def trino_case(name: str, tool: str, query: str) -> HookCase:
 
 HOOK_CASES = [
   read_case("read-big", {}, "deny"),
-  read_case("read-big-limit", {"limit": 50}, "allow"),
-  read_case("read-big-offset", {"offset": 10}, "allow"),
-  read_case("read-small", {}, "allow", file="small.txt"),
+  read_case("read-big-limit", {"limit": 50}, "silent"),
+  read_case("read-big-limit-over-threshold", {"limit": 351}, "deny"),
+  read_case("read-big-limit-at-threshold", {"limit": 350}, "silent"),
+  read_case("read-big-offset", {"offset": 10}, "deny"),
+  read_case("read-big-offset-rest-fits", {"offset": 100}, "silent"),
+  read_case("read-small", {}, "silent", file="small.txt"),
   edit_case("edit-ruff-toml", "ruff.toml", "100", "200", "deny"),
   edit_case("edit-pyproject-tool-section", "pyproject.toml", '["E", "F"]', '["E"]', "deny"),
   edit_case("edit-pyproject-dependency", "pyproject.toml", "2.31.0", "2.32.0", "allow"),
@@ -275,6 +289,529 @@ def test_trino_hook_fails_closed_without_a_project_root(override: dict[str, str]
   result = run_adapter("trino-guardrail", call, home, env={**env, **override})
   assert outcome(result) == "deny"
   assert "TRINO_GUARDRAIL_PROJECT_ROOT" in reason(result)
+
+
+# --- check-file-size run directly, as Claude runs it: no decision unless it blocks ---
+
+def read_hook(tool_input: Payload, home: Path, env: dict[str, str] | None = None, cwd: Path | None = None) -> Result:
+  """`cwd` is the working directory the payload names; the default of pre() holds none of the test files."""
+  payload = pre("Read", tool_input) if cwd is None else pre("Read", tool_input, cwd=str(cwd))
+  return run_claude_hook("check-file-size", payload, home, env)
+
+
+def guardrail_log(home: Path) -> list[Payload]:
+  path = home / ".claude" / "logs" / "file-read-guardrail.jsonl"
+  return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+SILENT_READS: dict[str, Callable[[Path], Payload]] = {
+  "not-a-read-call": lambda p: pre("Write", {"file_path": str(p / "big.txt")}),
+  "no-file-path": lambda p: pre("Read", {}),
+  "missing-file": lambda p: pre("Read", {"file_path": str(p / "nope.txt")}),
+  "directory": lambda p: pre("Read", {"file_path": str(p)}),
+  "under-threshold": lambda p: pre("Read", {"file_path": str(p / "small.txt")}),
+}
+
+
+@pytest.mark.parametrize("name", SILENT_READS)
+def test_the_read_hook_decides_nothing_when_there_is_nothing_to_block(name: str, home: Path, project: Path) -> None:
+  result = run_claude_hook("check-file-size", SILENT_READS[name](project), home)
+  assert (result.returncode, result.stdout) == (0, b"")
+
+
+@pytest.mark.parametrize("name,extra", [("scan.png", {}), ("doc.pdf", {"pages": "1-3"})])
+def test_the_read_hook_ignores_opaque_formats(name: str, extra: Payload, home: Path, tmp_path: Path) -> None:
+  opaque = tmp_path / name
+  opaque.write_text("line\n" * 400)
+  assert read_hook({"file_path": str(opaque), **extra}, home).stdout == b""
+
+
+# big.txt has 400 lines and the threshold is 350: the lines a call returns decide, not whether offset/limit are set
+@pytest.mark.parametrize("extra,expected", [
+  ({"limit": 99999}, "deny"),  # the old gap: a huge limit is a full read
+  ({"offset": 100, "limit": 300}, "silent"),
+  ({"offset": 51}, "silent"),  # 350 lines are left
+  ({"offset": 50}, "deny"),  # 351 lines are left
+  ({"offset": 390}, "silent"),
+  ({"offset": 5000}, "silent"),  # past the end: nothing is returned
+  ({"pages": "1-3"}, "deny"),  # pages is for PDFs: it does not exempt a text file
+  # a limit or offset that is not a positive integer counts as not set; a bool is not an integer here
+  ({"limit": 0}, "deny"), ({"limit": -1}, "deny"), ({"limit": "50"}, "deny"), ({"limit": 50.5}, "deny"),
+  ({"limit": True}, "deny"), ({"offset": 0}, "deny"), ({"offset": -5}, "deny"), ({"offset": True}, "deny"),
+  ({"limit": 50, "offset": 0}, "silent"),  # a bad offset does not cancel a good limit
+  ({"offset": 100, "limit": 0}, "silent"),  # and a bad limit does not cancel a good offset
+])
+def test_the_read_hook_sizes_a_partial_read_by_the_lines_it_returns(
+  extra: Payload, expected: str, home: Path, project: Path
+) -> None:
+  assert outcome(read_hook({"file_path": str(project / "big.txt"), **extra}, home)) == expected
+
+
+def test_the_read_hook_takes_the_threshold_from_the_environment(home: Path, project: Path) -> None:
+  env = {**make_env(home), "CLAUDE_READ_LINE_LIMIT": "5"}  # small.txt has 10 lines
+  small = str(project / "small.txt")
+  extras: list[Payload] = [{}, {"limit": 5}, {"limit": 6}]
+  results = [read_hook({"file_path": small, **extra}, home, env) for extra in extras]
+  assert [outcome(result) for result in results] == ["deny", "silent", "deny"]
+  assert "порог 5" in reason(results[0]) and "не больше 5 строк" in reason(results[0])
+
+
+# Read returns at most 2000 lines when the call has no limit, so a 2500-line file is a 2000-line read, offset or not
+@pytest.mark.parametrize("extra", [{}, {"offset": 1}], ids=["whole-file", "offset-1"])
+@pytest.mark.parametrize("threshold,expected", [("2200", "silent"), ("1999", "deny")])
+def test_the_read_hook_sizes_a_read_without_limit_as_at_most_2000_lines(
+  threshold: str, expected: str, extra: Payload, home: Path, tmp_path: Path
+) -> None:
+  huge = tmp_path / "huge.txt"
+  huge.write_text("line\n" * 2500)
+  env = {**make_env(home), "CLAUDE_READ_LINE_LIMIT": threshold}
+  assert outcome(read_hook({"file_path": str(huge), **extra}, home, env)) == expected
+
+
+# 150 lines: a threshold the hook accepts denies it, a rejected one falls back to 350 and lets it pass.
+@pytest.mark.parametrize("value,expected", [
+  ("100", "порог 100"), (" 100 ", "порог 100"), ("0", "порог 0"),
+  ("+100", None), ("1_000", None), ("-5", None), ("abc", None), ("", None), ("1e2", None),
+  ("١٠٠", None),  # Arabic-Indic digits: int() takes them, the JS port does not
+])
+def test_the_read_threshold_is_ascii_digits_with_optional_whitespace(
+  value: str, expected: str | None, home: Path, tmp_path: Path
+) -> None:
+  file = tmp_path / "s150.txt"
+  file.write_text("line\n" * 150)
+  result = read_hook({"file_path": str(file)}, home, {**make_env(home), "CLAUDE_READ_LINE_LIMIT": value})
+  if expected is None:
+    assert outcome(result) == "silent"
+  else:
+    assert expected in reason(result)
+
+
+@pytest.mark.parametrize("extra", [{}, {"limit": 351}, {"offset": 10}], ids=["whole-file", "big-limit", "big-offset"])
+def test_the_read_hook_denial_says_what_was_blocked_and_how_to_read_it(
+  extra: Payload, home: Path, project: Path
+) -> None:
+  text = reason(read_hook({"file_path": str(project / "big.txt"), **extra}, home))
+  assert "big.txt" in text and "400 строк" in text and "порог 350" in text
+  assert "offset" in text and "limit" in text and "не больше 350 строк" in text
+  assert "Explore" in text  # a subagent has no Agent tool: delegating is the main agent's option, not the only advice
+
+
+def outline_of(text: str) -> list[str]:
+  """The outline part of a denial: its `L<n>: ...` entries and the marker of the cut ones."""
+  return [line for line in text.splitlines() if re.match(r"L\d+: |… ещё ", line)]
+
+
+def outline_after_deny(name: str, content: str | bytes, home: Path, tmp_path: Path) -> list[str]:
+  """The outline of a file in `tmp_path`, read in a session whose working directory is `tmp_path`."""
+  file = tmp_path / name
+  file.write_bytes(content if isinstance(content, bytes) else content.encode("utf-8"))
+  return outline_of(reason(read_hook({"file_path": str(file)}, home, cwd=tmp_path)))
+
+
+def over_threshold(lines: list[str]) -> str:
+  """The lines, then enough filler for the file to pass the 350-line threshold."""
+  return "\n".join(lines + ["filler"] * 400) + "\n"
+
+
+MD_DOC = [
+  "# Title", "", "intro", "```bash", "# a comment in a fence, not a heading", "```",  # 1-6
+  "## Section", "#hashtag is not a heading", "    # indented code, not a heading",  # 7-9
+  "~~~", "### inside a tilde fence", "~~~", "### Subsection",  # 10-13
+  "````markdown", "```", "# inside a nested fence", "```", "# still inside the outer fence", "````",  # 14-19
+  "## After the fences",  # 20
+]
+PY_SRC = [
+  "import os", "", "class Foo:", "  def bar(self):", "    return 1", "",  # 1-6
+  "async def fetch(url):", "  return url", "# def commented():", "x = 'class Z'", "definitely = 1",  # 7-11
+]
+GD_SRC = [
+  "extends Node", "class_name Player", "signal died(reason)", "var hp := 10", "",  # 1-5
+  "func _ready() -> void:", '\tprint("func in a string")', "static func make() -> Player:",  # 6-8
+  "\treturn Player.new()", "class Inner:", "\tfunc nested():", "\t\tpass", "# func commented()", "funcy = 1",  # 9-14
+]
+CS_SRC = [
+  "using System;", "namespace Demo", "{", "    public class Player : MonoBehaviour", "    {",  # 1-5
+  "        private int hp = Compute(1);", "        public int Hp { get; set; }",  # 6-7
+  "        [SerializeField] private float speed;", "        public Player(int hp)", "        {",  # 8-10
+  "            Init(hp);", "        }", "        public static async Task<int> LoadAsync(string path)",  # 11-13
+  "        {", "            var x = new Foo(path);", "            return await Task.Run(() => 1);",  # 14-16
+  "        }",  # 17
+  "        private void Tick();", "        protected override void Update() { Run(); }",  # 18-19
+  "        public T Get<T>(int id) where T : class", "        internal enum State { Idle }",  # 20-21
+  "        public record Point(int X, int Y);", "        public int Twice(int x) => x * 2;",  # 22-23
+  "        if (hp > 0)", "    }", "    interface IThing { void Do(); }", "    struct Pair", "}",  # 24-28
+]
+JS_SRC = [
+  'import x from "y";', "export const a = 1;", "export default function main() {}",  # 1-3
+  "function helper() {}", "async function load() {}", "class Foo {}",  # 4-6
+  'describe("suite", () => {', '  it("works", () => {});', '  test.only("focus", () => {});',  # 7-9
+  '  it.skip("later", () => {});', "  const item = it(1);", "  items(1);",  # 10-12
+  "  // function commented() {}", "  functional();", "export interface Opts {}",  # 13-15
+  "exports.x = 1;", "abstract class Base {}",  # 16-17
+  "  class: failureClass,", "  function: { name },", "  export: true,",  # 18-20: object keys, not declarations
+]
+JS_OUTLINE = [
+  "L2: export const a = 1;", "L3: export default function main() {}", "L4: function helper() {}",
+  "L5: async function load() {}", "L6: class Foo {}", 'L7: describe("suite", () => {',
+  'L8: it("works", () => {});', 'L9: test.only("focus", () => {});', 'L10: it.skip("later", () => {});',
+  "L15: export interface Opts {}", "L17: abstract class Base {}",
+]
+OUTLINE_CASES = [
+  pytest.param("doc.md", MD_DOC, [
+    "L1: # Title", "L7: ## Section", "L13: ### Subsection", "L20: ## After the fences",
+  ], id="markdown"),
+  pytest.param("app.py", PY_SRC, ["L3: class Foo:", "L4: def bar(self):", "L7: async def fetch(url):"], id="python"),
+  pytest.param("player.gd", GD_SRC, [
+    "L2: class_name Player", "L3: signal died(reason)", "L6: func _ready() -> void:",
+    "L8: static func make() -> Player:", "L10: class Inner:", "L11: func nested():",
+  ], id="gdscript"),
+  pytest.param("Player.cs", CS_SRC, [
+    "L4: public class Player : MonoBehaviour", "L9: public Player(int hp)",
+    "L13: public static async Task<int> LoadAsync(string path)", "L19: protected override void Update() { Run(); }",
+    "L20: public T Get<T>(int id) where T : class", "L21: internal enum State { Idle }",
+    "L22: public record Point(int X, int Y);", "L26: interface IThing { void Do(); }", "L27: struct Pair",
+  ], id="csharp"),
+  *[pytest.param(f"app{e}", JS_SRC, JS_OUTLINE, id=e[1:]) for e in (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")],
+]
+
+
+@pytest.mark.parametrize("name,source,expected", OUTLINE_CASES)
+def test_the_denial_outlines_the_symbols_of_the_file_by_line_number(
+  name: str, source: list[str], expected: list[str], home: Path, tmp_path: Path
+) -> None:
+  assert outline_after_deny(name, over_threshold(source), home, tmp_path) == expected
+
+
+def test_an_outline_entry_is_cut_to_120_characters(home: Path, tmp_path: Path) -> None:
+  assert outline_after_deny("long.md", over_threshold(["# " + "x" * 200]), home, tmp_path) == ["L1: # " + "x" * 118]
+
+
+def test_the_outline_stops_at_sixty_entries_and_counts_the_rest(home: Path, tmp_path: Path) -> None:
+  sixty = outline_after_deny("sixty.md", over_threshold([f"# h{n}" for n in range(1, 61)]), home, tmp_path)
+  assert len(sixty) == 60 and sixty[-1] == "L60: # h60"
+  seventy = outline_after_deny("seventy.md", over_threshold([f"# h{n}" for n in range(1, 71)]), home, tmp_path)
+  assert len(seventy) == 61 and seventy[0] == "L1: # h1" and seventy[59] == "L60: # h60"
+  assert seventy[60] == "… ещё 10 символов не показано"
+
+
+@pytest.mark.parametrize("name,source", [("notes.txt", ["def foo():"]), ("plain.md", ["just text"])])
+def test_the_denial_has_no_outline_when_there_is_nothing_to_list(
+  name: str, source: list[str], home: Path, tmp_path: Path
+) -> None:
+  file = tmp_path / name
+  file.write_text(over_threshold(source))
+  text = reason(read_hook({"file_path": str(file)}, home, cwd=tmp_path))
+  assert "Структура" not in text and outline_of(text) == []
+
+
+# One sample path for each rule that the hook mirrors. The coverage test below checks that each rule has one.
+SAMPLE_PATH_BY_RULE = {
+  "Read(.env)": ".env",
+  "Read(.env.*)": ".env.py",
+  "Read(**/secrets/**)": "secrets/keys.py",
+}
+
+
+# The hook runs before the permission rules, so its outline must not quote a file those rules close to Read.
+@pytest.mark.parametrize("name", [
+  *SAMPLE_PATH_BY_RULE.values(), "Secrets/keys.py", "a/secrets/b/keys.py", ".ENV.py",  # case and depth variants
+])
+def test_the_denial_has_no_outline_for_paths_the_settings_close_to_read(name: str, home: Path, tmp_path: Path) -> None:
+  file = tmp_path / name
+  file.parent.mkdir(parents=True, exist_ok=True)
+  file.write_text(over_threshold(["def leak():", "# not for the model"]))
+  text = reason(read_hook({"file_path": str(file)}, home, cwd=tmp_path))
+  assert "402 строк" in text and "Структура" not in text and outline_of(text) == []  # still denied, no outline
+
+
+# The hook's outline exclusion is a hand-made copy of the global Read deny rules: a new rule there must fail here.
+def test_the_outline_exclusion_mirrors_every_read_deny_rule_of_the_global_settings() -> None:
+  deny = json.loads((HOOKS.parent / "settings.json").read_text())["permissions"]["deny"]
+  mirrored = load_hook("check-file-size.py").MIRRORED_READ_DENY_RULES
+  assert [rule for rule in deny if rule.partition("(")[0] == "Read" and rule not in mirrored] == []
+
+
+# Fails when a mirrored rule has no sample path, or a sample path has no mirrored rule.
+def test_the_sample_paths_cover_exactly_the_rules_the_settings_close_to_read() -> None:
+  assert set(SAMPLE_PATH_BY_RULE) == set(load_hook("check-file-size.py").MIRRORED_READ_DENY_RULES)
+
+
+# A sample that its own rule does not match would let the outline test pass without testing that rule.
+@pytest.mark.parametrize("rule,sample", SAMPLE_PATH_BY_RULE.items())
+def test_each_sample_path_matches_the_glob_of_its_rule(rule: str, sample: str) -> None:
+  glob = rule.removeprefix("Read(").removesuffix(")")
+  assert fnmatch(sample, glob) or fnmatch("/" + sample, glob)
+
+
+# The OpenCode port keeps its own copy of the rules as an object: it must say the same as the Python tuple.
+OPENCODE_PLUGIN = Path(__file__).resolve().parents[2] / ".config" / "opencode" / "plugins" / "claude-hooks.js"
+
+
+def test_the_opencode_port_mirrors_the_same_read_deny_rules_as_the_hook() -> None:
+  if not OPENCODE_PLUGIN.is_file():
+    pytest.skip("the OpenCode plugin is not installed")
+  found = re.search(r"MIRRORED_READ_DENY_RULES\s*=\s*\{([^}]*)\}", OPENCODE_PLUGIN.read_text())
+  assert found, "MIRRORED_READ_DENY_RULES object not found in claude-hooks.js"
+  fields = dict(re.findall(r'(\w+)\s*:\s*"([^"]*)"', found.group(1)))
+  assert set(fields) == {"fileName", "fileNamePrefix", "dirName"}
+  js_rules = {f"Read({fields['fileName']})", f"Read({fields['fileNamePrefix']}*)", f"Read(**/{fields['dirName']}/**)"}
+  assert js_rules == set(load_hook("check-file-size.py").MIRRORED_READ_DENY_RULES)
+
+
+HINT = "Оглавления нет: файл вне рабочей папки сессии."
+
+
+def test_the_denial_says_why_a_file_outside_the_working_directory_has_no_outline(home: Path, tmp_path: Path) -> None:
+  session = tmp_path / "session"
+  session.mkdir()
+  text = denial(doc_at(tmp_path / "elsewhere" / "doc.py"), home, session)
+  assert "402 строк" in text and outline_of(text) == [] and text.endswith("\n\n" + HINT)
+
+
+def test_the_denial_has_no_hint_inside_the_working_directory(home: Path, tmp_path: Path) -> None:
+  text = denial(doc_at(tmp_path / "doc.md"), home, tmp_path)
+  assert outline_of(text) == DOC_OUTLINE and HINT not in text
+  bare = tmp_path / "bare.py"  # inside, but no symbols: no outline for another reason, so no hint
+  bare.write_text("x = 1\n" * 400)
+  assert HINT not in denial(bare, home, tmp_path)
+
+
+@pytest.mark.parametrize("name", [*SAMPLE_PATH_BY_RULE.values(), "Secrets/keys.py"])
+def test_the_denial_has_no_hint_outside_the_working_directory_for_a_closed_path(
+  name: str, home: Path, tmp_path: Path
+) -> None:
+  session = tmp_path / "session"
+  session.mkdir()
+  file = tmp_path / "elsewhere" / name
+  file.parent.mkdir(parents=True)
+  file.write_text(DOC)
+  assert HINT not in denial(file, home, session)
+
+
+def test_the_denial_has_no_hint_for_an_extension_without_an_outline(home: Path, tmp_path: Path) -> None:
+  session = tmp_path / "session"
+  session.mkdir()
+  file = tmp_path / "elsewhere" / "data.txt"
+  file.parent.mkdir()
+  file.write_text(DOC)
+  assert HINT not in denial(file, home, session)
+
+
+def test_the_denial_has_no_hint_when_the_working_directory_cannot_be_found(home: Path, tmp_path: Path) -> None:
+  # Not a path: the outline fails, it is not "outside", so the hint would be a wrong reason.
+  assert HINT not in denial_from(tmp_path, doc_at(tmp_path / "doc.py"), home, {"cwd": 5})
+
+
+def test_the_denial_has_no_outline_behind_a_link_into_a_closed_path(home: Path, tmp_path: Path) -> None:
+  target = tmp_path / "secrets" / "keys.py"
+  target.parent.mkdir()
+  target.write_text(over_threshold(["def leak():"]))
+  link = tmp_path / "docs.py"
+  link.symlink_to(target)
+  text = reason(read_hook({"file_path": str(link)}, home, cwd=tmp_path))
+  assert "Структура" not in text and outline_of(text) == []
+
+
+@pytest.mark.parametrize("name,content,expected", [
+  pytest.param("blob.py", b"def ok():\n" + b"\xff\xfe\x00\x01\n" * 400, ["L1: def ok():"], id="not-utf8-with-nul"),
+  pytest.param("huge.md", b"# " + b"x" * 5_000_000 + b"\n" + b"filler\n" * 400, ["L1: # " + "x" * 118], id="5mb-line"),
+  pytest.param("bom.md", b"\xef\xbb\xbf# Title\r\n" + b"filler\r\n" * 400, ["L1: # Title"], id="bom-and-crlf"),
+])
+def test_the_outline_survives_binary_huge_line_and_bom_files(
+  name: str, content: bytes, expected: list[str], home: Path, tmp_path: Path
+) -> None:
+  assert outline_after_deny(name, content, home, tmp_path) == expected
+
+
+DOC = over_threshold(["# Title", "## Section"])  # 402 lines
+DOC_OUTLINE = ["L1: # Title", "L2: ## Section"]
+
+
+def doc_at(path: Path) -> Path:
+  path.parent.mkdir(parents=True, exist_ok=True)
+  path.write_text(DOC)
+  return path
+
+
+def test_a_failing_outline_is_empty_so_the_denial_still_happens(tmp_path: Path) -> None:
+  # The CLI has no way to make the outline read fail after the line count worked, so this one goes in-process.
+  hook = load_hook("check-file-size.py")
+  folder = tmp_path / "notes.md"
+  folder.mkdir()
+  # The control: a readable file in the same working directory has an outline, so the empty one below comes from the read.
+  assert hook.build_outline(doc_at(tmp_path / "doc.md"), str(tmp_path)) == "\n".join(DOC_OUTLINE)
+  assert hook.build_outline(folder, str(tmp_path)) == ""
+
+
+# --- the outline only for a file inside the working directory of the session ---
+# The hook runs before the permission prompt, and the prompt is how the user opens a file outside the working directory.
+# An outline there would show the structure of the file before the user answers. Only the outline goes: the denial stays.
+
+def denial(file: Path, home: Path, cwd: Path) -> str:
+  return reason(read_hook({"file_path": str(file)}, home, cwd=cwd))
+
+
+def test_the_denial_outlines_a_file_deep_inside_the_working_directory(home: Path, tmp_path: Path) -> None:
+  session = tmp_path / "session"
+  assert outline_of(denial(doc_at(session / "docs" / "deep" / "doc.md"), home, session)) == DOC_OUTLINE
+
+
+@pytest.mark.parametrize("where", [
+  pytest.param("elsewhere/doc.md", id="other-directory"),
+  pytest.param("doc.md", id="parent-directory"),
+  pytest.param("session-extra/doc.md", id="sibling-with-the-same-name-prefix"),  # not inside: /a/bc is not in /a/b
+  pytest.param("session/../elsewhere/doc.md", id="dot-dot-out-of-the-directory"),  # starts with the directory, leaves it
+])
+def test_the_denial_has_no_outline_for_a_file_outside_the_working_directory(
+  where: str, home: Path, tmp_path: Path
+) -> None:
+  session = tmp_path / "session"
+  session.mkdir()
+  text = denial(doc_at(tmp_path / where), home, session)
+  assert "402 строк" in text and "порог 350" in text  # still denied
+  assert "Структура" not in text and outline_of(text) == []
+  assert guardrail_log(home)[-1]["decision"] == "deny"
+
+
+@pytest.mark.parametrize("link", ["file-link.md", "dir-link/doc.md"], ids=["file-link", "dir-link"])
+def test_a_link_in_the_working_directory_to_a_file_outside_it_gets_no_outline(
+  link: str, home: Path, tmp_path: Path
+) -> None:
+  session = tmp_path / "session"
+  session.mkdir()
+  doc = doc_at(tmp_path / "elsewhere" / "doc.md")
+  (session / "file-link.md").symlink_to(doc)
+  (session / "dir-link").symlink_to(doc.parent)
+  text = denial(session / link, home, session)
+  assert "402 строк" in text and outline_of(text) == []
+
+
+def test_a_link_outside_the_working_directory_to_a_file_inside_it_is_judged_by_the_real_path(
+  home: Path, tmp_path: Path
+) -> None:
+  # The file is in the working directory, where the session reads without a prompt: its outline gives nothing away.
+  session = tmp_path / "session"
+  link = tmp_path / "elsewhere" / "link.md"
+  link.parent.mkdir()
+  link.symlink_to(doc_at(session / "doc.md"))
+  assert outline_of(denial(link, home, session)) == DOC_OUTLINE
+
+
+def test_the_working_directory_and_the_file_are_compared_by_their_real_paths(home: Path, tmp_path: Path) -> None:
+  session = tmp_path / "session"
+  doc = doc_at(session / "doc.md")
+  alias = tmp_path / "alias"
+  alias.symlink_to(session)
+  assert outline_of(denial(doc, home, alias)) == DOC_OUTLINE  # the directory is named through a link
+  assert outline_of(denial(alias / "doc.md", home, session)) == DOC_OUTLINE  # the file is named through a link
+
+
+def swapped_case(path: Path) -> Path:
+  return Path(str(path).swapcase())
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="letter case is ignored only on macOS (APFS)")
+def test_a_file_named_in_another_letter_case_is_inside_the_working_directory_on_macos(
+  home: Path, tmp_path: Path
+) -> None:
+  session = tmp_path / "session"
+  doc = doc_at(session / "doc.md")
+  if not swapped_case(doc).exists():
+    pytest.skip("the temporary directory is case-sensitive")
+  text = denial(swapped_case(doc), home, session)
+  assert outline_of(text) == DOC_OUTLINE and HINT not in text
+  assert outline_of(denial(doc, home, swapped_case(session))) == DOC_OUTLINE
+
+
+# ß must not fold to ss, as casefold() would; the JS port uses toLowerCase()
+@pytest.mark.parametrize("path,base,inside", [
+  (Path("/a/Straße/doc.md"), Path("/a/STRASSE"), False),
+  (Path("/a/Session/doc.md"), Path("/a/SESSION"), True),
+])
+def test_on_macos_letter_case_is_folded_without_expanding_sharp_s(
+  monkeypatch: pytest.MonkeyPatch, path: Path, base: Path, inside: bool
+) -> None:
+  monkeypatch.setattr(sys, "platform", "darwin")
+  assert load_hook("check-file-size.py").is_inside(path, base) == inside
+
+
+def test_a_sibling_that_differs_from_the_working_directory_by_letters_and_a_suffix_stays_outside(
+  home: Path, tmp_path: Path
+) -> None:
+  session = tmp_path / "session"
+  session.mkdir()
+  text = denial(doc_at(tmp_path / "SESSIONX" / "doc.md"), home, session)
+  assert outline_of(text) == [] and text.endswith("\n\n" + HINT)
+
+
+def test_the_filesystem_root_as_the_working_directory_holds_every_file(home: Path, tmp_path: Path) -> None:
+  assert outline_of(denial(doc_at(tmp_path / "doc.md"), home, Path("/"))) == DOC_OUTLINE
+
+
+def denial_from(workdir: Path, doc: Path, home: Path, cwd_field: Payload) -> str:
+  """The denial of a read whose payload has no `cwd` but `cwd_field`, run by a hook process that starts in `workdir`."""
+  payload = pre("Read", {"file_path": str(doc)})
+  del payload["cwd"]
+  payload.update(cwd_field)
+  return reason(run_claude_hook("check-file-size", payload, home, workdir=workdir))
+
+
+@pytest.mark.parametrize("cwd_field", [{}, {"cwd": None}, {"cwd": ""}], ids=["absent", "null", "empty"])
+def test_without_a_cwd_in_the_payload_the_working_directory_is_the_one_of_the_hook_process(
+  cwd_field: Payload, home: Path, tmp_path: Path
+) -> None:
+  session = tmp_path / "session"
+  doc = doc_at(session / "doc.md")
+  elsewhere = tmp_path / "elsewhere"
+  elsewhere.mkdir()
+  assert outline_of(denial_from(session, doc, home, cwd_field)) == DOC_OUTLINE
+  text = denial_from(elsewhere, doc, home, cwd_field)
+  assert "402 строк" in text and outline_of(text) == []
+
+
+@pytest.mark.parametrize("junk", [5, ["/"]], ids=["number", "list"])
+def test_a_cwd_that_is_not_a_path_costs_the_outline_not_the_denial(junk: object, home: Path, tmp_path: Path) -> None:
+  doc = doc_at(tmp_path / "doc.md")  # inside the directory the hook process starts in, so a fallback would outline it
+  text = denial_from(tmp_path, doc, home, {"cwd": junk})
+  assert "402 строк" in text and outline_of(text) == []
+
+
+def test_a_working_directory_that_cannot_be_found_costs_the_outline_not_the_denial(home: Path, tmp_path: Path) -> None:
+  doc = doc_at(tmp_path / "doc.md")
+  gone = tmp_path / "gone"
+  gone.mkdir()
+  payload = pre("Read", {"file_path": str(doc)})
+  del payload["cwd"]
+  # The hook process starts in `gone`, and the shell removes it first: os.getcwd() fails, as for a deleted session dir.
+  script = 'cd "$1" && rmdir "$1" && exec "$2" "$3"'
+  argv = ["sh", "-c", script, "sh", str(gone), sys.executable, str(HOOKS / "check-file-size.py")]
+  result = subprocess.run(argv, input=json.dumps(payload).encode(), capture_output=True, env=make_env(home), timeout=60)
+  text = reason(result)
+  assert "402 строк" in text and outline_of(text) == []
+
+
+def test_through_the_adapter_the_working_directory_is_the_payload_cwd_else_the_one_the_adapter_starts_in(
+  home: Path, tmp_path: Path
+) -> None:
+  # DSH sends the session directory as `cwd` and starts the hook in it. The adapter has to leave both as they are.
+  session = tmp_path / "session"
+  doc = doc_at(session / "doc.md")
+  elsewhere = tmp_path / "elsewhere"
+  elsewhere.mkdir()
+  payload = pre("read", {"file_path": str(doc)}, cwd=str(session))
+  assert outline_of(reason(run_adapter("check-file-size", payload, home, workdir=elsewhere))) == DOC_OUTLINE
+  del payload["cwd"]
+  assert outline_of(reason(run_adapter("check-file-size", payload, home, workdir=session))) == DOC_OUTLINE
+
+
+@pytest.mark.parametrize("stdin", [
+  pytest.param(b"", id="empty"), pytest.param(b"not json", id="not-json"), pytest.param(b"[]", id="not-an-object"),
+  pytest.param(json.dumps(pre("Read", {"file_path": 5})).encode(), id="file-path-is-not-a-string"),
+])
+def test_the_read_hook_fails_open_without_a_decision(stdin: bytes, home: Path) -> None:
+  result = run_claude_hook("check-file-size", stdin, home)
+  assert (result.returncode, result.stdout) == (0, b"")
+  assert guardrail_log(home)[-1]["decision"] == "allow-on-error"
 
 
 # --- payload translation, seen by a hook that echoes what it received ---
@@ -333,7 +870,7 @@ def test_the_generic_subagent_tool_reaches_the_hook_as_a_general_purpose_agent_c
 
 # --- require-orchestration over the synthetic per-session transcript ---
 
-def role_call(role: str, prompt: str = "slice_id: dsh-hooks\ndo the work", session: str = "sess-1") -> Payload:
+def role_call(role: str, prompt: str = "slice_id: dsh-hooks\ninvariant_paths: none - test\ndata_sample: n/a\nspec_check: n/a\ndivisible: no - test\ndo the work", session: str = "sess-1") -> Payload:
   return pre(role, {"description": "work", "prompt": prompt}, session=session)
 
 
@@ -362,6 +899,13 @@ def test_lookup_roles_and_reviewer_need_no_doctrine(role: str, home: Path) -> No
 def test_a_gated_role_passes_after_track_skill(role: str, home: Path) -> None:
   load_doctrine(home)
   assert outcome(gate(home, role)) == "allow"
+
+
+@pytest.mark.parametrize("role", ["code-writer-t2", "code-writer-t3"])
+def test_t2_t3_are_denied_without_the_brief_checklist(role: str, home: Path) -> None:
+  load_doctrine(home)
+  result = gate(home, role, prompt="slice_id: dsh-hooks\ndo the work")
+  assert outcome(result) == "deny" and "invariant_paths" in reason(result)
 
 
 @pytest.mark.parametrize("role", ROLES)

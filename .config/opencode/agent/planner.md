@@ -2,9 +2,9 @@
 description: "Read-only implementation planner for code changes whose approach is genuinely open — several modules, a public API, a schema, data or migrations, security, concurrency, or unclear requirements. Investigates the repository and returns a sliced plan with risks, dependencies, and observable acceptance criteria. Never edits files or implements the plan."
 mode: subagent
 steps: 30
-model: openrouter/~deepseek/deepseek-v4.1-flash-latest
+model: openrouter/deepseek/deepseek-v4.1-flash-1017
 models:
-  - ~deepseek/deepseek-v4.1-flash-latest
+  - deepseek/deepseek-v4.1-flash-1017
   - ~google/gemini-flash-latest
 reasoning:
   effort: high

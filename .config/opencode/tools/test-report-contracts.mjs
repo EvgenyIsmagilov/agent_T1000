@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Прогоняет golden-фикстуры из .claude/tools/fixtures/reports/ (от корня репозитория) через JS-порт
+// Прогоняет golden-фикстуры из ~/.claude/tools/fixtures/reports/ через JS-порт
 // валидатора (../lib/report-contracts.mjs) и сверяет исход/причину с тем,
 // что ожидает test_agent_reporting.py для тех же файлов. Держит JS и Python
 // валидацию в одном контракте — расхождение здесь означает, что порт отстал
@@ -8,11 +8,11 @@
 // Использование: node ~/.config/opencode/tools/test-report-contracts.mjs
 // Ничего не пишет в ~/.claude/logs — только читает фикстуры.
 import { readFileSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { ROLE_CONTRACTS, validateReport } from "../lib/report-contracts.mjs";
 
-const FIXTURES_DIR = fileURLToPath(new URL("../../../.claude/tools/fixtures/reports", import.meta.url));
+const FIXTURES_DIR = join(homedir(), ".claude", "tools", "fixtures", "reports");
 
 // Зеркало EXTRA_MALFORMED_REASONS в test_agent_reporting.py.
 const EXTRA_MALFORMED_REASONS = {
@@ -102,6 +102,25 @@ for (const name of ["constructor", "toString", "hasOwnProperty", "__proto__"]) {
     result.status === "valid" && result.verdict === "DONE",
     JSON.stringify(result)
   );
+}
+
+// Нестандартные строки статуса: вердикт сохраняется, контракт остаётся invalid.
+// Зеркало RelaxedStatusLineTests в test_agent_reporting.py.
+{
+  const make = (line) => `### Result\n${line}\n### Changes\nc\n### Verification\nv`;
+  for (const line of ["`DONE`: s", "DONE: s", "`DONE`. s", "**DONE** — s", "`DONE`, s"]) {
+    const r = validateReport("code-writer-t2", true, make(line));
+    check(`relaxed status ${line}`, r.verdict === "DONE" && r.status === "invalid"
+      && JSON.stringify(r.reasons) === '["nonstandard_status_line"]', JSON.stringify(r));
+  }
+  const std = validateReport("code-writer-t2", true, make("`DONE` — s"));
+  check("standard status stays valid", std.verdict === "DONE" && std.status === "valid");
+  for (const line of ["DONEX: s", "DONE_FOO — s", "done: s", "NOT DONE: s"]) {
+    const r = validateReport("code-writer-t2", true, make(line));
+    check(`lookalike ${line} has no verdict`, r.verdict === null
+      && r.reasons.includes("missing_or_invalid_status")
+      && !r.reasons.includes("nonstandard_status_line"), JSON.stringify(r));
+  }
 }
 
 if (failures) {

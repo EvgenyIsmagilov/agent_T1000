@@ -7,15 +7,17 @@ description: classify a code-writer slice into T1/T2/T3 before delegating, using
 
 Classify every slice before writing its brief, once you've looked at the affected code — not from the goal statement alone, since you need to know what the change actually touches. Pick the tier from checkable facts about the slice, never from a feeling of difficulty — vague sizing is how tiers drift toward whichever one feels safest.
 
+The tier depends on difficulty and criticality, not on volume. Volume decides only whether to cut the slice, and only a slice with `divisible: yes` gets cut (see `task-orchestration`'s **Slicing multi-file work**). The one exception is an indivisible slice over 15 files: it goes to T3 (see the scale trigger below).
+
 ## The three tiers
 
 | Tier | Agent | Model | Effort | Target share |
 |---|---|---|---|---|
 | T1 | `code-writer-t1` | haiku | max | ~30% |
 | T2 | `code-writer-t2` | sonnet | medium | ~50%, the default |
-| T3 | `code-writer-t3` | sonnet | max | ~20% |
+| T3 | `code-writer-t3` | sonnet | xhigh | ~20% |
 
-`opus` never writes code — it stays reserved for `reviewer`. Whether `haiku` honors the `effort` setting is unverified. Target shares are a calibration goal, checked against `python3 ~/.claude/tools/first-pass.py` (split by tier), not a quota to force on any single task.
+`opus` or `fable` never writes code — it stays reserved for `reviewer`, `planner`, and `magi-*`. Whether `haiku` honors the `effort` setting is unverified. Target shares are a calibration goal, checked against `python3 ~/.claude/tools/first-pass.py` (split by tier), not a quota to force on any single task.
 
 ## Default: T2
 
@@ -59,4 +61,4 @@ Name the tier and, for T1 or T3, the specific box or trigger that put it there, 
 
 ## Escalation
 
-Each tier gets 2 attempts (see `task-orchestration`'s Loop limits). An `executor`-classified failure moves the slice up exactly one tier — T1 to T2, or T2 to T3 — never skipping a tier and never on a hunch that "this was probably always too hard for that tier": the failure classification step is what establishes that, not this rubric.
+`task-orchestration` owns escalation (Work loop step 8 and Loop limits). This rubric picks the starting tier only; never re-tier a slice from it on a hunch that "this was probably always too hard for that tier".

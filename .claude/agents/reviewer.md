@@ -1,8 +1,8 @@
 ---
 name: reviewer
-description: Independent, adversarial, read-only review gate for code, SQL, and security. Use before accepting, merging, or declaring non-trivial or risky work complete — not for trivial diffs. Loads code-review plus the conditional skills the change calls for and returns one verdict. Never edits files or executes production workloads.
+description: Independent, adversarial, read-only review gate for code, SQL, and security. Use before accepting, merging, or declaring any code change complete; task-orchestration runs it once per slice that changed code, however small. Loads code-review plus the conditional skills the change calls for and returns one verdict. Never edits files or executes production workloads.
 tools: Read, Grep, Glob, Bash, Skill, mcp__trino__explain_query
-model: opus
+model: claude-fable-5-2
 maxTurns: 120
 effort: xhigh
 hooks:

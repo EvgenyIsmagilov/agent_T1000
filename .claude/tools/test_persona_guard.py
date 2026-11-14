@@ -53,7 +53,8 @@ class GuardCase(unittest.TestCase):
         p = self.repo / name
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(content if isinstance(content, bytes) else content.encode("utf-8"))
-        self.git("add", name)
+        # -f: имена артефактов редакторов попадают под глобальный gitignore разработчика (*.swp, .#*).
+        self.git("add", "-f", name)
 
     def guard(self, *extra, root=None, input=None):
         return run(self.repo, "python3", str(GUARD), "--root", str(root or self.root), *extra, input=input)
@@ -125,12 +126,19 @@ class StagedTests(GuardCase):
         self.assertBlocked(self.guard(), "base.txt")
 
     def test_filename_variants(self):
-        for n in ("sub/persona.md", "Persona.md", "persona.md.bak", "persona-markers.txt"):
+        # Артефакты редакторов (vim, emacs, macOS AppleDouble) начинаются с точки или #.
+        blocked = ("sub/persona.md", "Persona.md", "persona.md.bak", "persona-markers.txt",
+                   ".persona-markers.regex.swp", ".#persona-markers.regex", "#persona-markers.regex#",
+                   "._persona-markers.txt", ".persona.md.swp")
+        for n in blocked:
             with self.subTest(n):
                 self.stage(n, "innocent\n")
                 self.assertBlocked(self.guard(), "filename")
                 self.git("rm", "-qf", "--cached", n)
-        self.stage("personality.md", "innocent\n")
+        # Имена из репозитория и близкие к ним не должны блокироваться по имени.
+        for n in ("personality.md", "persona.example.md", "persona_scan.py", "persona-guard.py",
+                  "test_persona_guard.py"):
+            self.stage(n, "innocent\n")
         self.assertClean(self.guard())
 
     def test_plus_prefixed_content(self):

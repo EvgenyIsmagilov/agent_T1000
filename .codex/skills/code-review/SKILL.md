@@ -55,7 +55,7 @@ Normal test caches or temporary reports may be created by existing tools. Disabl
 5. Load the skills the change calls for instead of relying on generic knowledge:
    - `python`, `sql`, `airflow`, `docker`, `godot`, `infra` when correctness depends on that stack;
    - `sql-review` and `sql` for meaningful SQL, ETL/ELT, or analytical SQL — perform their full correctness and cluster-cost workflow as part of this review;
-   - `appsec-review` when the diff touches a security surface: authentication, authorization, secrets, untrusted input, data exposure, dependencies, or container and server configuration.
+   - `appsec-review` when the diff touches a security surface: authentication, authorization, secrets, untrusted input, data exposure, dependencies, native or `unsafe` code and FFI, network protocols, multiplayer RPC, queues and webhooks, or container and server configuration.
 6. If the target or base is ambiguous enough to make conclusions unreliable, report `BLOCKED` rather than guessing.
 
 ## Re-review

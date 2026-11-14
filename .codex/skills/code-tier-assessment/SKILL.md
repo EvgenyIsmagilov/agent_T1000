@@ -7,13 +7,15 @@ description: "Classify an implementation slice into T1, T2 or T3 before delegati
 
 Classify every slice before writing its brief, and only after looking at the affected code — the goal statement alone does not tell you what the change actually touches. Pick the tier from checkable facts, never from a feeling of difficulty: vague sizing is how tiers drift toward whichever one feels safest.
 
+The tier depends on difficulty and criticality, not on volume. Volume decides only whether to cut the slice, and only a slice with `divisible: yes` gets cut (see `task-orchestration`'s **Slicing multi-file work**). The one exception is an indivisible slice over 15 files: it goes to T3 (see the scale trigger below).
+
 ## The three tiers
 
 | Tier | Agent | Model | Effort |
 |---|---|---|---|
 | T1 | `code-writer-t1` | gpt-6-luna | medium |
-| T2 | `code-writer-t2` | gpt-6-sol | medium |
-| T3 | `code-writer-t3` | gpt-6-sol | xhigh |
+| T2 | `code-writer-t2` | gpt-6.1-terra | medium |
+| T3 | `code-writer-t3` | gpt-6.1-sol | medium |
 
 `gpt-6-astra` writes no code. It stays reserved for `reviewer`: review benefits from the strongest judgment on someone else's finished work, while writing benefits more from tiering, because most slices are not hard.
 
@@ -61,6 +63,6 @@ Name the tier in the brief's `tier` field, and for T1 or T3 name the specific bo
 
 ## Escalation
 
-Each tier gets 2 attempts (see `task-orchestration`, Loop limits). A failure classified `executor` moves the slice up exactly one tier, T1 to T2 or T2 to T3, never skipping. T3 has nothing above it — the strongest model writes no code — so a slice that defeats T3 needs a better plan or a smaller slice, not a stronger writer.
+`task-orchestration` owns escalation (Work loop step 8 and Loop limits); this rubric picks the starting tier only. T3 has nothing above it — the strongest model writes no code — so a slice that defeats T3 needs a better plan or a smaller slice, not a stronger writer.
 
 Never escalate on a hunch that the slice "was probably always too hard for that tier". The failure classification step establishes that, not this rubric.

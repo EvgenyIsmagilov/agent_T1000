@@ -27,7 +27,7 @@ Commands may create normal temporary caches or test artifacts. Disable them when
 2. Inspect the smallest relevant context: failing file and stack-trace locations; direct callers and dependencies; nearby tests and configuration; recent changes via `git diff`, `git log`, or `git blame` when useful.
 3. Reproduce the issue with the smallest safe command available. Reproduce before you explain: a defect you could not observe is reported as not reproduced, and one that cannot be reproduced here for want of environment, production data, or cluster access is reported as exactly that — never swapped for a weaker check that happens to run.
 4. Form a short list of plausible hypotheses, ordered by likelihood.
-5. Test hypotheses one at a time using read-only inspection or focused commands.
+5. Test hypotheses one at a time using read-only inspection or focused commands. Before each test, state which result confirms the hypothesis and which result refutes it.
 6. Stop when one root cause is strongly supported, or when remaining uncertainty cannot be resolved safely.
 7. Verify the diagnosis explains all important observed symptoms, not only one line of the stack trace.
 
@@ -38,7 +38,10 @@ Commands may create normal temporary caches or test artifacts. Disable them when
 - Distinguish the first meaningful failure from downstream errors.
 - Check boundaries where data, control flow, types, state, time zones, concurrency, configuration, or external services enter the failing path.
 - Compare expected and actual values as close as possible to the first divergence.
+- If the repository has a similar path that works (a sibling DAG, an equivalent handler or scene, the last good commit), compare it with the broken path and list every difference, however small.
 - Consider recent code changes, but do not assume the newest change is responsible without evidence.
+- If the failing path runs through recently written code or an earlier fix, treat its author's assumptions as claims to check, not as evidence. This applies to code written in this session too.
+- If a regression has a known good state, bisect: split the commit range or the failing input in half until the first bad commit or the smallest failing input remains. Run `git bisect` only in a separate worktree or a temporary clone, because it checks out other commits into the working tree.
 - Treat flaky behavior separately from deterministic failures.
 - Distinguish code defects from environment, dependency, credential, network, configuration, and test-fixture problems.
 - Do not claim certainty when evidence is incomplete, and never let a `PROBABLE` or `INCONCLUSIVE` diagnosis read as established.

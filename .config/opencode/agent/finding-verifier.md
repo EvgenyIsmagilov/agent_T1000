@@ -2,7 +2,7 @@
 description: "Verify one specific claim about the code, usually a single code-review finding — does the defect hold, and is something already preventing it. Read-only and refutation-first. Use it on a finding you doubt before spending a code-writer run on the fix. Not a reviewer, it checks one claim someone else made and never hunts for other defects; for a whole diff use reviewer, for an unexplained failure use bug-investigator."
 mode: subagent
 steps: 15
-model: openrouter/~deepseek/deepseek-v4.1-flash-latest
+model: dspark/deepseek-v4-flash
 options:
   reasoningEffort: medium
 tools:

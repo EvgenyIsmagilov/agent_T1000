@@ -26,6 +26,7 @@ AGENTS_DIR = CLAUDE_DIR / "agents"
 
 NEAR_CAP = 0.9  # within 10% of maxTurns: the run nearly died of old age
 MIN_DEDUP_SCHEMA = 5  # below this, turns/tokens sum every content block, not every turn
+NONSTANDARD_STATUS_LINE = "nonstandard_status_line"
 
 
 def human(n):
@@ -111,8 +112,13 @@ def flags(rec, caps):
             if metadata == "empty":
                 out.append("пустой отчёт")
             else:
-                detail = ", ".join(rec.get("contract_reasons") or [])
-                out.append("некорректный формат" + (f" ({detail})" if detail else ""))
+                reasons = rec.get("contract_reasons") or []
+                other = [r for r in reasons if r != NONSTANDARD_STATUS_LINE]
+                # Вердикт прочитан: нестандартная строка статуса сама по себе не даёт флага.
+                # Invalid без причин остаётся видимым: неизвестно, что с отчётом не так.
+                if other or not reasons:
+                    detail = ", ".join(other)
+                    out.append("некорректный формат" + (f" ({detail})" if detail else ""))
         elif status == "unavailable":
             out.append("отчёт недоступен" if metadata != "empty" else "пустой отчёт")
     if rec.get("stop_reason") == "max_tokens":
@@ -322,8 +328,13 @@ def main():
     suspicious = [(rec, flags(rec, caps)) for rec in runs]
     suspicious = [(rec, f) for rec, f in suspicious if f]
     print(f"\nПОДОЗРИТЕЛЬНЫЕ — {len(suspicious)} из {len(runs)}")
+    nonstandard = sum(
+        NONSTANDARD_STATUS_LINE in (rec.get("contract_reasons") or []) for rec in runs
+    )
+    if nonstandard:
+        print(f"  нестандартная строка статуса (вердикт прочитан, предупреждение): {nonstandard}")
     if not suspicious:
-        print("  по доступным данным предупреждений нет")
+        print("  подозрительных прогонов нет")
     for rec, why in suspicious[-args.runs:]:
         ts = parse_ts(rec)
         stamp = ts.strftime("%m-%d %H:%M") if ts else "??"

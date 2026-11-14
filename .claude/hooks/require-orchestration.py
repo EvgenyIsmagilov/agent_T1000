@@ -94,7 +94,7 @@ def allow():
 # exception in main(): logged as allow-on-error, never a silent crash.
 sys.path.insert(0, str(Path(__file__).parent))
 try:
-    from brief_fields import BRIEF_RE  # noqa: E402
+    from brief_fields import BRIEF_RE, CHECKLIST_FIELDS, CHECKLIST_RE  # noqa: E402
 except Exception as e:
     log_event(None, "allow-on-error", repr(e))
     allow()
@@ -104,6 +104,9 @@ except Exception as e:
 # Gated separately from EXEMPT_AGENTS/the doctrine gate above — this only
 # requires the brief to name a slice, not that the skill was loaded.
 SLICE_GATE_AGENTS = {"code-writer-t1", "code-writer-t2", "code-writer-t3", "test-runner"}
+
+# Agent types whose brief must carry the checklist lines. Presence only; `divisible` also needs yes/no.
+CHECKLIST_GATE_AGENTS = {"code-writer-t2", "code-writer-t3"}
 
 
 def skill_loaded(path):
@@ -171,8 +174,29 @@ def slice_gate_reason(agent_type, tool_input):
     )
 
 
+def checklist_gate_reason(agent_type, tool_input):
+    """None when the brief has all checklist lines or the gate does not apply."""
+    if agent_type not in CHECKLIST_GATE_AGENTS:
+        return None
+    if os.environ.get("CLAUDE_BRIEF_CHECKLIST_GATE") == "0":
+        return None
+    prompt = str(tool_input.get("prompt") or tool_input.get("description") or "")
+    missing = [n for n in CHECKLIST_FIELDS if not CHECKLIST_RE[n].search(prompt)]
+    if not missing:
+        return None
+    return (
+        f"Делегирование в subagent_type={agent_type} без обязательных строк брифа: "
+        f"{', '.join(missing)}. Добавь в промпт каждую строку вида `<поле>: <значение>`, "
+        "значение на той же строке. Если поле неприменимо, допустимы `none — <причина>` "
+        "или `n/a` (с причиной). Для `divisible` значение: `yes` или `no` и причина на той же строке, "
+        "например `divisible: no — один парсер`. Затем повтори этот вызов Agent."
+    )
+
+
 def enforce_slice_gate(agent_type, tool_input):
-    """Deny (and exit) if the slice gate fails; otherwise return normally.
+    """Deny (and exit) if the slice gate or the checklist gate fails; otherwise return.
+
+    The checklist gate runs after the slice gate and has its own kill switch.
 
     Called on every path that would otherwise `allow()` — the two kill
     switches are independent, so disabling the doctrine gate must not also
@@ -182,6 +206,10 @@ def enforce_slice_gate(agent_type, tool_input):
     if slice_reason:
         log_event(agent_type, "deny-slice", slice_reason)
         deny(slice_reason)
+    checklist_reason = checklist_gate_reason(agent_type, tool_input)
+    if checklist_reason:
+        log_event(agent_type, "deny-checklist", checklist_reason)
+        deny(checklist_reason)
 
 
 def main():

@@ -1,10 +1,11 @@
-import { appendFile, access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, access, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, resolve, sep } from "node:path";
+import { basename, extname, join, resolve, sep } from "node:path";
 import { validateReport, verdictStatus } from "../lib/report-contracts.mjs";
 
 const DEFAULT_LINE_LIMIT = 350;
+const READ_DEFAULT_LINES = 2000; // сколько строк read отдаёт без limit
 const LOG_DIR = join(homedir(), ".claude", "logs");
 const READ_LOG = "file-read-guardrail.jsonl";
 // Собственный файл, отдельно от log-subagent.py (Claude Code) — раньше оба
@@ -17,9 +18,31 @@ const DOCS_DRIFT_LOG = "docs-drift-reminders-opencode.jsonl";
 const MCP_FAILURES_LOG = "mcp-failures-opencode.jsonl";
 const MCP_HEALTH_STATE = join(LOG_DIR, "mcp-health-state-opencode.json");
 
-const READ_TARGETED_PARAMS = ["offset", "limit", "pages"];
-
 const SKIP_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".pdf", ".zip", ".tar", ".gz", ".tgz", ".7z", ".rar", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".mp3", ".mp4", ".mov", ".avi", ".wav", ".exe", ".dll", ".so", ".dylib", ".bin", ".woff", ".woff2", ".ttf", ".otf", ".class", ".jar", ".pyc"]);
+
+const OUTLINE_MAX_ENTRIES = 60;
+const OUTLINE_MAX_WIDTH = 120;
+
+// Символы для оглавления отказа: шаблон по расширению, совпадение от начала строки с отступом (порт SYMBOL_PATTERNS
+// из ~/.claude/hooks/check-file-size.py). Шаблоны идут за строкой линейно: строка в мегабайты не должна вешать хук.
+// \w из Python понимает Unicode, поэтому в C# вместо него [\p{L}\p{N}_] с флагом u.
+const CS_MODIFIERS = String.raw`(?:(?:public|private|protected|internal|static|sealed|abstract|partial|readonly|unsafe|new|file)\s+)*`;
+const JS_SYMBOL = /^\s*(?:export[\s{*]|(?:async\s+)?function[\s*]|(?:abstract\s+)?class\s|(?:describe|it|test)(?:\.(?:only|skip))?\()/;
+const SYMBOL_PATTERNS = new Map([
+  [".gd", /^\s*(?:static\s+func|func|class_name|class|signal)\s/],
+  // C#: тип или метод (модификатор доступа, тип, имя, «(»); метод со «;» в конце строки не берём
+  [".cs", new RegExp(String.raw`^\s*(?:${CS_MODIFIERS}(?:class|struct|interface|enum|record)\s+[\p{L}\p{N}_]|(?:public|private|protected|internal)\s(?!.*;\s*$)[^=;(){}]*?[\p{L}\p{N}_>]\s*\()`, "u")],
+  [".py", /^\s*(?:async\s+def|def|class)\s/],
+  [".md", /^ {0,3}#{1,6}(?:\s|$)/],
+  ...[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"].map((ext) => [ext, JS_SYMBOL]),
+]);
+const MD_FENCE = /^\s*(`{3,}|~{3,})(.*)/;
+
+// Зеркало MIRRORED_READ_DENY_RULES из ~/.claude/hooks/check-file-size.py: правила Read(.env), Read(.env.*) и
+// Read(**/secrets/**) из permissions.deny глобального ~/.claude/settings.json. Хук идёт раньше проверки разрешений,
+// поэтому оглавление не должно цитировать файл, закрытый этими правилами. Копия ручная: тест дрейфа в
+// ~/.claude/tools/test_dsh_adapter.py разбирает этот объект и сверяет его с питоновским списком; проектные settings и managed policy хук не читает.
+const MIRRORED_READ_DENY_RULES = { fileName: ".env", fileNamePrefix: ".env.", dirName: "secrets" };
 
 // Проект, в пределах которого разрешены вызовы Trino MCP.
 // Задайте путь к своему checkout в переменной OPENCODE_TRINO_GUARDRAIL_PROJECT_ROOT.
@@ -41,6 +64,17 @@ const SLICE_GATE_AGENTS = new Set(["code-writer-t1", "code-writer-t2", "code-wri
 // Mirrors BRIEF_RE["slice_id"] in brief_fields.py (Python hook) — a JS copy
 // is unavoidable since the two hooks run in separate runtimes.
 const SLICE_ID_RE = /^[ \t]*[-*]?[ \t]*`?slice_id`?[ \t]*[:=][ \t]*`?([A-Za-z0-9._-]{1,64})/im;
+
+// Checklist lines required in a code-writer-t2/t3 brief; mirrors CHECKLIST_FIELDS
+// and CHECKLIST_RE in brief_fields.py (Python hook) — same line-anchored form,
+// value of at least one non-space character on the same line.
+const CHECKLIST_GATE_AGENTS = new Set(["code-writer-t2", "code-writer-t3"]);
+const CHECKLIST_FIELDS = ["invariant_paths", "data_sample", "spec_check", "divisible"];
+// `divisible` строже: целое слово yes/no, затем причина с буквой или цифрой (тот же текст класса, что в brief_fields.py).
+CHECKLIST_RE.divisible = /^[ \t]*[-*]?[ \t]*`?divisible`?[ \t]*[:=][ \t]*`?(?:yes|no)(?![A-Za-z0-9_А-Яа-яЁё|/])`?[^\n]*?[A-Za-z0-9А-Яа-яЁё]/im;
+const CHECKLIST_RE = Object.fromEntries(
+  CHECKLIST_FIELDS.map((name) => [name, new RegExp(`^[ \\t]*[-*]?[ \\t]*\`?${name}\`?[ \\t]*[:=][ \\t]*[^\\n]*?[A-Za-z0-9А-Яа-яЁё]`, "im")]),
+);
 
 const VERDICT_RE = /(DONE|PARTIAL|BLOCKED|PASS|FAIL|CONFIRMED|PROBABLE|INCONCLUSIVE|APPROVE|REQUEST_CHANGES)/;
 
@@ -134,6 +168,143 @@ async function logEvent(file, extra) {
     await appendFile(join(LOG_DIR, file), JSON.stringify({ timestamp: new Date().toISOString(), ...extra }) + "\n");
   } catch {
     /* никогда не ломать работу из-за логирования */
+  }
+}
+
+// Сколько строк вернёт read: min(limit или 2000, строк от начала чтения до конца файла) — одна формула для любого вызова.
+// limit и offset, которые не целые числа больше нуля (строка, булево, дробь, минус), считаются незаданными.
+// offset в read OpenCode 1-based (схема инструмента в 1.19.5: «1-indexed», 0 читается как 1). Проверено только по этой
+// версии: если в другой база 0-based, размер завысится не больше чем на строку — ошибка в сторону отказа.
+function readSize({ offset, limit }, lines) {
+  const count = Number.isInteger(limit) && limit > 0 ? limit : READ_DEFAULT_LINES;
+  const start = Number.isInteger(offset) && offset > 0 ? offset : 1;
+  return Math.min(count, Math.max(lines - start + 1, 0));
+}
+
+// Путь под правилами MIRRORED_READ_DENY_RULES. Имена без учёта регистра: на APFS `.ENV.py` и `.env.py` — один файл.
+function isProtectedPath(path) {
+  const { fileName, fileNamePrefix, dirName } = MIRRORED_READ_DENY_RULES;
+  const name = basename(path).toLowerCase();
+  return name === fileName || name.startsWith(fileNamePrefix) || path.split(sep).some((part) => part.toLowerCase() === dirName);
+}
+
+// Лежит ли путь в каталоге: по компонентам пути, не по строковому префиксу (/a/bc не внутри /a/b). Оба пути уже раскрыты realpath.
+// На macOS (APFS без учёта регистра) компоненты сравниваются без учёта регистра, как в питон-хуке.
+const isInside = (path, directory) => {
+  const fold = (p) => (process.platform === "darwin" ? p.toLowerCase() : p);
+  const a = fold(path);
+  const b = fold(directory);
+  return a === b || a.startsWith(b.endsWith(sep) ? b : b + sep);
+};
+
+// Строки файла вместе с "\n": делим только по "\n", как нумерует read и считает countLines. Битый UTF-8 даёт U+FFFD.
+async function* readLines(path) {
+  let rest = "";
+  for await (const text of createReadStream(path, { encoding: "utf8" })) {
+    const parts = text.split("\n");
+    parts[0] = rest + parts[0];
+    rest = parts.pop(); // хвост без "\n" (пустой, если чанк кончился переводом строки)
+    for (const part of parts) yield `${part}\n`;
+  }
+  if (rest) yield rest;
+}
+
+// Закрывает ли строка блок кода: забор того же символа, не короче открывающего и без текста после него.
+const closesFence = (marker, fence) => marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim();
+
+// Первые width символов по кодовым точкам, как срез строки в Python: пара суррогатов не рвётся.
+const clip = (text, width) => Array.from(text.slice(0, width * 2)).slice(0, width).join("");
+
+// Оглавление файла для текста отказа: строки «L<номер>: символ», не больше OUTLINE_MAX_ENTRIES (порт build_outline из
+// check-file-size.py). Пустая строка, если у расширения нет шаблона, символов нет, путь закрыт правилами Read, файл вне
+// рабочего каталога сессии (directory) или файл не прочитался: отказ не должен зависеть от оглавления. Хук идёт раньше
+// проверки разрешений, поэтому из закрытого файла оглавление не должно выдать ни строки, а из файла вне directory —
+// структуру до запроса разрешения на внешний каталог (external_directory: ask). Файл и каталог сравниваются по
+// реальным путям и по компонентам пути. Каталог не определён или не раскрылся — оглавления нет.
+async function buildOutline(filePath, directory) {
+  const ext = extname(filePath).toLowerCase();
+  const pattern = SYMBOL_PATTERNS.get(ext);
+  if (!pattern) return "";
+  const shown = [];
+  let total = 0;
+  let number = 0;
+  let fence = "";
+  try {
+    const real = await realpath(filePath);
+    if (isProtectedPath(filePath) || isProtectedPath(real)) return "";
+    // Файлы вне directory оглавления не получают, даже если OpenCode их разрешил (доп. каталоги, правила): компромисс принят
+    if (!directory || !isInside(real, await realpath(directory))) return "";
+    for await (const raw of readLines(real)) {
+      number += 1;
+      const line = number === 1 ? raw.replace(/^\uFEFF/, "") : raw; // BOM в начале файла не прячет символ первой строки
+      if (ext === ".md") {
+        const marker = MD_FENCE.exec(line);
+        if (fence) {
+          if (closesFence(marker, fence)) fence = "";
+          continue;
+        }
+        if (marker) {
+          fence = marker[1];
+          continue;
+        }
+      }
+      if (!pattern.test(line)) continue;
+      total += 1;
+      if (total <= OUTLINE_MAX_ENTRIES) shown.push(`L${number}: ${clip(line.trim(), OUTLINE_MAX_WIDTH)}`);
+    }
+  } catch {
+    return ""; // оглавление — приложение к отказу, его сбой отказ не отменяет
+  }
+  if (total > OUTLINE_MAX_ENTRIES) shown.push(`… ещё ${total - OUTLINE_MAX_ENTRIES} символов не показано`);
+  return shown.join("\n");
+}
+
+// Порог из OPENCODE_READ_LINE_LIMIT: только целое из десятичных цифр, пробелы по краям допустимы. Всё остальное (пусто,
+// текст, " ", "Infinity", "1e3", "0x10") — порог по умолчанию, как у int() в питон-хуке. Number() принял бы больше:
+// " " дало бы 0 (отказ на любое чтение), "Infinity" отключило бы хук, "1e3" и "0x10" дали бы 1000 и 16.
+// "0" допустим: порог 0, отказ на любое чтение непустого файла («не больше 0 строк за вызов»). Так задумано, как в питон-хуке.
+function getThreshold() {
+  const raw = process.env.OPENCODE_READ_LINE_LIMIT;
+  return /^\s*\d+\s*$/.test(raw ?? "") ? Number(raw) : DEFAULT_LINE_LIMIT;
+}
+
+const OUTSIDE_HINT = "Оглавления нет: файл вне рабочей папки сессии.";
+
+// OUTSIDE_HINT, если оглавления нет именно потому, что файл вне рабочего каталога (порт outside_hint из питон-хука).
+// Пусто для расширения без шаблона, закрытого пути и любого сбоя, в том числе каталог не определён.
+async function outsideHint(filePath, directory) {
+  if (!SYMBOL_PATTERNS.has(extname(filePath).toLowerCase())) return "";
+  try {
+    const real = await realpath(filePath);
+    if ([filePath, real].some(isProtectedPath)) return "";
+    if (!directory) return "";
+    const session = await realpath(directory);
+    return isInside(real, session) ? "" : OUTSIDE_HINT;
+  } catch {
+    return "";
+  }
+}
+
+// Текст отказа для read, если чтение длиннее порога, иначе undefined. Отказ возвращается, а не бросается:
+// бросает его вызывающий код вне try, поэтому fail-open не проглотит отказ, а отказ не примут за внутреннюю ошибку.
+// directory — рабочий каталог сессии: оглавление строится только для файла внутри него.
+async function readDenial(args, directory) {
+  const filePath = args.filePath;
+  if (!filePath) return;
+  try {
+    if (SKIP_EXTENSIONS.has(extname(filePath).toLowerCase())) return;
+    await access(filePath);
+    const lines = await countLines(filePath);
+    const threshold = getThreshold();
+    if (readSize(args, lines) <= threshold) return;
+    const reason = `Файл ${filePath} — ${lines} строк, порог ${threshold}. Читай частями: tool "read" с offset и limit, не больше ${threshold} строк за вызов. Главный агент может делегировать чтение сабагенту (tool "task", subagentType=explore или general).`;
+    await logEvent(READ_LOG, { file_path: filePath, lines, threshold, decision: "deny", reason });
+    const outline = await buildOutline(filePath, directory);
+    if (outline) return `${reason}\n\nСтруктура файла:\n${outline}`;
+    const hint = await outsideHint(filePath, directory);
+    return hint ? `${reason}\n\n${hint}` : reason;
+  } catch (err) {
+    await logEvent(READ_LOG, { file_path: filePath, decision: "allow-on-error", reason: err instanceof Error ? err.message : String(err) });
   }
 }
 
@@ -473,24 +644,8 @@ export const ClaudeHooks = async ({ directory }) => {
       const args = output.args || input.args || {};
 
       if (tool === "read") {
-        const filePath = args.filePath;
-        if (!filePath || READ_TARGETED_PARAMS.some((p) => args[p] !== undefined)) return;
-        const ext = filePath.slice(filePath.lastIndexOf(".")).toLowerCase();
-        if (SKIP_EXTENSIONS.has(ext)) return;
-        try {
-          await access(filePath);
-          const lines = await countLines(filePath);
-          const threshold = Number(process.env.OPENCODE_READ_LINE_LIMIT || DEFAULT_LINE_LIMIT);
-          if (lines > threshold) {
-            const reason = `Файл ${filePath} — ${lines} строк, порог ${threshold}. Не читай целиком: делегируй чтение/анализ сабагенту (tool "task", subagentType=Explore или general-purpose) и забери выжимку, а не сырое содержимое.`;
-            await logEvent(READ_LOG, { file_path: filePath, lines, threshold, decision: "deny", reason });
-            throw new Error(reason);
-          }
-        } catch (err) {
-          if (err instanceof Error && err.message.startsWith("Файл ")) throw err;
-          await logEvent(READ_LOG, { file_path: filePath, decision: "allow-on-error", reason: err instanceof Error ? err.message : String(err) });
-          return;
-        }
+        const denial = await readDenial(args, directory);
+        if (denial) throw new Error(denial);
         return;
       }
 
@@ -520,6 +675,15 @@ export const ClaudeHooks = async ({ directory }) => {
           if (!SLICE_ID_RE.test(text)) {
             throw new Error(
               `Делегирование в subagentType=${subagentType} без строки slice_id в промпте. Добавь в промпт строку \`slice_id: <name>\` (для внепланового прогона подойдёт \`slice_id: adhoc\`) и повтори вызов task.`
+            );
+          }
+        }
+        if (CHECKLIST_GATE_AGENTS.has(subagentType) && process.env.OPENCODE_BRIEF_CHECKLIST_GATE !== "0") {
+          const text = String(args.prompt || args.description || "");
+          const missing = CHECKLIST_FIELDS.filter((name) => !CHECKLIST_RE[name].test(text));
+          if (missing.length) {
+            throw new Error(
+              `Делегирование в subagentType=${subagentType} без обязательных строк брифа: ${missing.join(", ")}. Добавь в промпт каждую строку вида \`<поле>: <значение>\`, значение на той же строке. Если поле неприменимо, допустимы \`none — <причина>\` или \`n/a\` (с причиной). Для \`divisible\` значение: \`yes\` или \`no\` и причина на той же строке, например \`divisible: no — один парсер\`. Затем повтори вызов task.`
             );
           }
         }

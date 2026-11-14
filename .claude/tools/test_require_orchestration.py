@@ -27,6 +27,9 @@ def load_hook() -> ModuleType:
     return module
 
 
+FULL_CHECKLIST = "invariant_paths: a\ndata_sample: b\nspec_check: c\ndivisible: no \u2014 d\n"
+
+
 class SliceGateTests(unittest.TestCase):
     def setUp(self):
         self.hook = load_hook()
@@ -74,7 +77,7 @@ class SliceGateTests(unittest.TestCase):
 
     def test_allow_with_backticked_list_item_slice_id(self):
         decision, _ = self.run_hook(
-            {"subagent_type": "code-writer-t2", "prompt": "- `slice_id`: foo\ndo stuff"}
+            {"subagent_type": "code-writer-t2", "prompt": "- `slice_id`: foo\n" + FULL_CHECKLIST}
         )
         self.assertEqual(decision, "allow")
 
@@ -106,6 +109,92 @@ class SliceGateTests(unittest.TestCase):
         )
         self.assertEqual(decision, "deny")
         self.assertIn("slice_id", reason)
+
+    def test_checklist_denies_t2_t3_when_lines_missing(self):
+        lines = FULL_CHECKLIST.splitlines()
+        for agent in ("code-writer-t2", "code-writer-t3"):
+            for drop in ([0], [1], [2], [3], [0, 1], [0, 1, 2, 3]):
+                kept = [l for i, l in enumerate(lines) if i not in drop]
+                prompt = "slice_id: foo\n" + "\n".join(kept)
+                decision, reason = self.run_hook({"subagent_type": agent, "prompt": prompt})
+                self.assertEqual(decision, "deny", (agent, drop))
+                for i in drop:
+                    self.assertIn(lines[i].split(":")[0], reason)
+                self.assertIn("n/a", reason)
+        self.assertIn("deny-checklist", self.tmp_log())
+
+    def tmp_log(self):
+        return Path(self.tmp.name).read_text()
+
+    def test_checklist_allows_valid_forms_of_all_fields(self):
+        for block in (
+            FULL_CHECKLIST,
+            "invariant_paths: none \u2014 single file\ndata_sample: n/a\nspec_check: none - no ticket\ndivisible: no - single file\n",
+            "- invariant_paths: a\n* `data_sample`: b\n  `spec_check` = c\n  divisible: no, d\n",
+            FULL_CHECKLIST.replace("divisible: no \u2014 d", "divisible: no \u2014 one parser"),
+            FULL_CHECKLIST.replace("divisible: no \u2014 d", "- `divisible`: yes, three independent modules"),
+            FULL_CHECKLIST.replace("divisible: no \u2014 d", "DIVISIBLE = No (shared invariant)"),
+            FULL_CHECKLIST.replace("divisible: no \u2014 d", "divisible: yes - two modules"),
+            FULL_CHECKLIST.replace("divisible: no \u2014 d", "divisible: no: reason"),
+        ):
+            decision, _ = self.run_hook(
+                {"subagent_type": "code-writer-t3", "prompt": "slice_id: foo\n" + block}
+            )
+            self.assertEqual(decision, "allow", block)
+
+    def test_divisible_needs_yes_or_no_and_reason(self):
+        head = "slice_id: foo\ninvariant_paths: a\ndata_sample: b\nspec_check: c\n"
+        for value in ("divisible: yes", "divisible: no", "divisible: maybe \u2014 x",
+                      "divisible: yesterday \u2014 x", "divisible:", "divisible: none \u2014 x",
+                      "divisible: yes \u2014", "divisible: `yes`",
+                      "divisible: yes|no \u2014 \u043f\u0440\u0438\u0447\u0438\u043d\u0430", "divisible: yes/no \u2014 x"):
+            decision, reason = self.run_hook({"subagent_type": "code-writer-t2", "prompt": head + value + "\n"})
+            self.assertEqual(decision, "deny", value)
+            self.assertIn("divisible: no \u2014 \u043e\u0434\u0438\u043d \u043f\u0430\u0440\u0441\u0435\u0440", reason)
+        decision, _ = self.run_hook({"subagent_type": "code-writer-t2", "prompt": head})
+        self.assertEqual(decision, "deny")
+
+    def test_checklist_denies_empty_value_and_prose_mention(self):
+        prompt = "slice_id: foo\ninvariant_paths: a\ndata_sample: b\ndivisible: no - x\nspec_check:   \n"
+        decision, reason = self.run_hook({"subagent_type": "code-writer-t2", "prompt": prompt})
+        self.assertEqual(decision, "deny")
+        self.assertIn("spec_check", reason)
+        for junk in ("`", "``", ":", "-", "`-`"):
+            prompt = f"slice_id: foo\ninvariant_paths: a\ndata_sample: b\ndivisible: no - x\nspec_check:{junk}\n"
+            decision, _ = self.run_hook({"subagent_type": "code-writer-t2", "prompt": prompt})
+            self.assertEqual(decision, "deny", junk)
+        prose = "slice_id: foo\nFill the spec_check: line, data_sample: and invariant_paths: x here\n"
+        decision, _ = self.run_hook({"subagent_type": "code-writer-t2", "prompt": prose})
+        self.assertEqual(decision, "deny")
+
+    def test_checklist_does_not_gate_t1_or_test_runner(self):
+        for agent in ("code-writer-t1", "test-runner"):
+            decision, _ = self.run_hook({"subagent_type": agent, "prompt": "slice_id: foo"})
+            self.assertEqual(decision, "allow", agent)
+
+    def test_checklist_kill_switch_is_independent(self):
+        prompt = "slice_id: foo"
+        decision, _ = self.run_hook(
+            {"subagent_type": "code-writer-t2", "prompt": prompt},
+            env={"CLAUDE_BRIEF_CHECKLIST_GATE": "0"},
+        )
+        self.assertEqual(decision, "allow")
+        decision, reason = self.run_hook(
+            {"subagent_type": "code-writer-t2", "prompt": "no slice"},
+            env={"CLAUDE_BRIEF_CHECKLIST_GATE": "0"},
+        )
+        self.assertEqual(decision, "deny")
+        self.assertIn("slice_id", reason)
+        for env in ({"CLAUDE_SLICE_GATE": "0"}, {"CLAUDE_ORCHESTRATION_GATE": "0"}):
+            decision, reason = self.run_hook({"subagent_type": "code-writer-t2", "prompt": prompt}, env=env)
+            self.assertEqual(decision, "deny", env)
+            self.assertIn("invariant_paths", reason)
+
+    def test_slice_gate_fires_before_checklist(self):
+        decision, reason = self.run_hook({"subagent_type": "code-writer-t2", "prompt": "nothing"})
+        self.assertEqual(decision, "deny")
+        self.assertIn("slice_id", reason)
+        self.assertNotIn("invariant_paths", reason)
 
 
 class MissingBriefFieldsModuleTests(unittest.TestCase):

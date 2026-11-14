@@ -11,7 +11,7 @@ Apply these standards when administering a Linux server (home server or VPS). Co
 
 1. Inspect the target first: distro, init system, what services already run, existing configs. Never assume the environment.
 2. Follow the machine's existing conventions and configs — the server always wins over defaults here.
-3. Prefer the smallest reversible change. Back up any config before editing it (keep a timestamped `.bak`).
+3. Prefer the smallest reversible change. Before you edit a config, copy it with `cp -a` to `/var/backups/config/`. Name the copy `<service>.<file>.<YYYYMMDD-HHMMSS>.bak`, for example `nginx.nginx.conf.20261103-142530.bak`. Create the directory with mode 700 if it is missing. Never leave the copy next to the original.
 4. Make changes idempotent and safe to re-run.
 5. State what changed, how to verify it, and how to roll it back.
 
@@ -38,6 +38,9 @@ Apply these standards when administering a Linux server (home server or VPS). Co
 
 - Default-deny inbound; open only the ports actually needed.
 - SSH: key-only auth, disable root login and password auth, and add fail2ban or an equivalent for brute-force protection.
+- Before you add or change an automatic block rule (a fail2ban jail, an ufw or iptables deny, a rate limit), put the host's own internal addresses in the exceptions. These include loopback, Docker and other container networks (for example `172.16.0.0/12`), VPN and tunnel subnets, and the known admin addresses. For fail2ban, use `ignoreip` in `[DEFAULT]`.
+- Reason: a ban on an internal address cuts a local service off from the host. An all-ports ban can come before the allow rules and block that service completely.
+- After the reload, verify the exceptions with `fail2ban-client get <jail> ignoreip`. Also make sure that no internal address is in the current ban list.
 
 ## Storage placement
 

@@ -13,7 +13,9 @@ from pathlib import Path
 
 from persona_scan import ScanError, find_hits, load_fingerprints
 
-BLOCKED_PREFIXES = ("persona.md", "persona-markers")
+# Подстрока, а не префикс: артефакты редакторов (.persona.md.swp, .#persona-markers.regex)
+# начинаются с точки или #.
+BLOCKED_NAME_PARTS = ("persona.md", "persona-markers")
 HUNK = re.compile(rb"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
 GIT_DIFF = ["--literal-pathspecs", "diff", "--no-color", "--no-renames"]
 
@@ -59,7 +61,8 @@ def scan_diff(fp, rev_args: list[str], label: str = "") -> list[str]:
   # без --diff-filter, чтобы не пропустить смену типа файла (symlink).
   hits = []
   for path in names(rev_args, "--diff-filter=ACMRT"):
-    if os.path.basename(path).casefold().startswith(BLOCKED_PREFIXES):
+    name = os.path.basename(path).casefold()
+    if any(part in name for part in BLOCKED_NAME_PARTS):
       hits.append(f"blocked: {label}{path}: filename #1")
   # git diff по явному пути, чтобы путь в отчёте не зависел от кавычек и префиксов.
   for path in names(rev_args):

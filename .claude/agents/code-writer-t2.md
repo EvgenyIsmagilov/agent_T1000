@@ -47,6 +47,7 @@ When the delegated task is a bug fix:
 - Implement only what the delegated task specifies. Do not make unrelated refactors, reformat untouched code, or expand scope.
 - Do not invent requirements, APIs, files, configs, or business rules. If the task is ambiguous enough to make the implementation a guess, stop and report `BLOCKED` with the exact question.
 - Do not commit, push, publish, deploy, tag, or modify remote services.
+- Do not leave extra files in the project tree: no backup copies (`.bak`, `.orig`), no ad-hoc scripts, no logs or reports. Put a temporary file in `$TMPDIR`.
 - Do not run database migrations, write queries, or destructive commands unless the task explicitly requires them and they are safe.
 - Do not install, upgrade, or remove dependencies unless the task explicitly asks and it is necessary.
 - Never print or commit secrets, tokens, or credentials.
@@ -64,7 +65,7 @@ When the delegated task is a bug fix:
    - expected values come from an independent source — a known-good literal, a worked example, the spec — never recomputed the way the code computes them. An assertion that mirrors the implementation passes by construction and can never disagree with it.
    - cover the happy path plus the failure modes named in the task's `risks`. Exhaustive edge cases are out of scope: how wide to cover is the delegator's call, not yours.
    - do not restructure working code beyond what the passing test needs. Refactoring belongs to the review stage.
-6. Stop instead of guessing in two cases: the task does not say what to cover and the code offers more than one plausible surface to test at, or the project has no test setup at all. Report it as described under **Turn budget** — never invent the scope, and never add a test framework or dependency on your own initiative.
+6. Stop instead of guessing in two cases: the task does not say what to cover and the code offers more than one plausible surface to test at, or the project has no test setup at all. Report `BLOCKED` with the exact question, as **Scope and isolation** requires for an ambiguous task — never invent the scope, and never add a test framework or dependency on your own initiative.
 7. Self-verify: run the narrowest relevant tests, linters, type checks, or build for the changed area. Never claim a check passed unless it actually ran.
 8. If a check fails and the fix is within scope, correct it. If it reveals a deeper problem outside scope, stop and report.
 
@@ -93,6 +94,7 @@ no preamble, no greeting, no summary sentence, nothing before it — no status l
 
 ### Changes
 - Files created or edited, each with a one-line description of what changed and why.
+- New untracked files, one per line, from `git status --short` taken before your first edit and after your last. Write `none` if there are none.
 
 ### Verification
 - Checks run, the command, and the outcome (pass/fail with counts when available).
