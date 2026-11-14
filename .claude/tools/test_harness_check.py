@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import traceback
 import unittest
 from collections.abc import Callable
 from pathlib import Path
@@ -52,13 +53,15 @@ def problem_lines(stdout: str) -> list[str]:
 
 
 def leaks_file_text(error: Exception, path: Path) -> bool:
-    """Return True if the message of `error` repeats a run of 20 characters from the file at `path`.
+    """Return True if the message of `error`, or a local of a frame in its traceback, repeats a run of 20 characters from the file at `path`.
 
+    pytest -l and unittest --locals print these locals.
     The check lives here, not in an assert: a failing assert prints its operands, and the text must not reach the output.
     """
-    message = str(error)
     text = path.read_text()
-    return any(message[i:i + 20] in text for i in range(len(message) - 19))
+    shown = [str(error)]
+    shown += [repr(value) for frame, _ in traceback.walk_tb(error.__traceback__) for value in frame.f_locals.values()]
+    return any(part[i:i + 20] in text for part in shown for i in range(len(part) - 19))
 
 
 def change_first_line(text: str, heading: str) -> str:
@@ -95,7 +98,11 @@ class HarnessCheckTests(unittest.TestCase):
         # Писать можно только в копию под ROOT, а не в файл по ссылке из реального конфига.
         self.assertTrue(path.resolve().is_relative_to(self.root.resolve()), str(path))
         before = text_digest(path)
-        path.write_text(change(path.read_text()))
+        try:
+            path.write_text(change(path.read_text()))
+        except OSError as error:
+            # В кадре write_text лежит весь новый текст (`data`): pytest -l и unittest --locals напечатали бы его вместе с ключом API.
+            raise RuntimeError(f"edit could not rewrite {path.name}: {type(error).__name__}") from None
         # Хеши вместо текстов: провал assertNotEqual напечатал бы оба текста, а в opencode.jsonc лежит ключ API.
         self.assertTrue(text_digest(path) != before, f"edit changed nothing in {path.name}")  # иначе тест ничего не проверяет
 
@@ -115,6 +122,22 @@ class HarnessCheckTests(unittest.TestCase):
         # Порядок важен: assertTrue с `in` напечатал бы сообщение, если бы в нём был текст конфига.
         self.assertFalse(leaks_file_text(caught.exception, jsonc), f"the message repeats text of {jsonc.name}")
         self.assertTrue(jsonc.name in str(caught.exception), "the message does not name the file")
+
+    def test_write_error_in_edit_keeps_file_text_out_of_traceback(self) -> None:
+        jsonc = copy_jsonc(make_root(self.root, set()))
+        jsonc.chmod(0o444)
+        # ignore_errors=True в setUp скрыл бы сбой rmtree, и копия конфига с ключом осталась бы во временном каталоге.
+        self.addCleanup(jsonc.chmod, 0o644)
+        try:
+            self.edit(jsonc, lambda t: t + " ")
+        except Exception as error:  # assertRaises очищает кадры traceback, а проверка читает их локальные переменные
+            leaked = leaks_file_text(error, jsonc)
+            diagnosed = jsonc.name in str(error) and "PermissionError" in str(error)
+        else:
+            self.fail(f"edit did not fail on the read-only {jsonc.name}")
+        # Проверки стоят вне except: иначе упавший assert потянул бы за собой цепочку с текстом конфига.
+        self.assertFalse(leaked, f"the error repeats text of {jsonc.name}")
+        self.assertTrue(diagnosed, f"the error does not name {jsonc.name} and the error type")
 
     def test_changed_line_in_constraints_names_the_section(self) -> None:
         root = make_root(self.root, {HOME / ".claude/agents"})
