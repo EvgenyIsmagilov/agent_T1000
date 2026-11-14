@@ -95,12 +95,14 @@ Before delegating non-trivial work, compose one structured brief and reuse it fo
 - `slice_id`: a short stable name for this slice, reused verbatim in every brief about it — retries, escalations, and the fix brief after review. A hook refuses to spawn `code-writer-t1/t2/t3` or `test-runner` without a `slice_id:` line in the prompt. It is what ties the implementer run, its validation and its review together in the run log; without it a slice's outcome cannot be measured afterwards.
 - `tier`: `T1`, `T2`, or `T3`; for `T1` or `T3`, the box or trigger from `code-tier-assessment` that put it there.
 - `context`: why, plus constraints that shape the approach.
-- `files_to_inspect`: the specific files to read before changing anything.
+- `files_to_inspect`: the specific files to read before changing anything. For `T2` and `T3`, add an anchor for each place you already read while you scoped the slice: `file:start-end — symbol — what changes or matters there`. Write only ranges you actually saw; never guess line numbers. If a file changed after you read it (an earlier slice, a fix round), read the range again or give the symbol without line numbers. Anchors are a starting point, not a boundary: the implementer still reads callers, tests, and anything else the change needs.
 - `changes`: per file, a `file` and a one-line `action` — what must change, not how.
 - `risks`: concrete ways the change could break something else.
-- `invariant_paths`: for `T2` and `T3`, every code path and twin implementation (for example a C# copy and a GDScript copy) that holds the invariant this slice touches. Find them by search, not from memory. If there is only one, write `none` and the reason. A hook refuses to spawn `code-writer-t2` or `code-writer-t3` without this line, `data_sample`, and `spec_check`.
+- `invariant_paths`: for `T2` and `T3`, every code path and twin implementation (for example a C# copy and a GDScript copy) that holds the invariant this slice touches. Find them by search, not from memory. If there is only one, write `none` and the reason. A hook refuses to spawn `code-writer-t2` or `code-writer-t3` without this line, `data_sample`, `spec_check`, and `divisible`.
 - `data_sample`: for `T2` and `T3`, the real sample (a file, a record, a query result) that your assumptions about an external data format were checked against. Write `n/a` if the slice reads no external format.
 - `spec_check`: for `T2` and `T3`, the ticket or requirement you compared the brief with, and a statement that the brief contradicts neither it nor itself. If there is no ticket, write `none` and the reason.
+- `divisible`: for `T2` and `T3`, `yes` or `no`, then the reason. Example: `divisible: no — one parser, every change goes through the same function`. Apply the test in **Slicing multi-file work**. The tier records how difficult the slice is; this field records only whether you can cut it. A hook checks this line for `code-writer-t2/t3`. It refuses the call if the value does not start with `yes` or `no` or has no reason on the same line.
+- `volume`: for `T2` and `T3`, the number of files in `changes` and the total line count of the files in `files_to_inspect`. Count the lines with `wc -l`. Example: `volume: 9 files, 4200 lines`. **Slicing multi-file work** tells you what to do with these numbers.
 - `test_scope`: for `T2` and `T3`, the public surface the tests must go through, and which of the `risks` above must be covered as failure modes. Both tiers work test-first and will stop rather than guess when the code offers more than one plausible surface, so name it. Breadth is your call, not theirs: happy path plus the named failure modes, not an exhaustive sweep of edge cases. When the project has no test setup, say so here — the implementer will not build one on its own initiative. Omit for `T1`.
 - `acceptance_criteria`: how to verify done (build, specific test, observed behavior). A criterion checks behavior on a fixture or a controlled input, not a snapshot of live data.
 
@@ -108,7 +110,7 @@ Before handing it off:
 - If something needed for the brief is missing (unclear goal, unknown files, no acceptance criteria), ask the user directly instead of guessing.
 - If you filled gaps by inference, do not proceed silently. Summarize the assumptions against the structure above, inferred `acceptance_criteria` included, and get the user to confirm before delegating.
 
-When the work comes from a subagent report — a reviewer finding or a `bug-investigator` diagnosis — do not author a fresh brief and do not summarize. For a `T2` or `T3` slice, still copy the slice's `invariant_paths`, `data_sample`, and `spec_check` lines into it. Forward the report's own section verbatim as the brief, adding only the objective and the files in scope. Carry the reporter's qualifiers with it: severity, confidence, and a diagnosis status of `PROBABLE` or `INCONCLUSIVE`. Never present a hedged diagnosis as established, and do not delegate a fix from an `INCONCLUSIVE` or `BLOCKED` report.
+When the work comes from a subagent report — a reviewer finding or a `bug-investigator` diagnosis — do not author a fresh brief and do not summarize. For a `T2` or `T3` slice, still copy the slice's `invariant_paths`, `data_sample`, `spec_check`, and `divisible` lines into it. Forward the report's own section verbatim as the brief, adding only the objective and the files in scope. Carry the reporter's qualifiers with it: severity, confidence, and a diagnosis status of `PROBABLE` or `INCONCLUSIVE`. Never present a hedged diagnosis as established, and do not delegate a fix from an `INCONCLUSIVE` or `BLOCKED` report.
 
 ### Isolated slices (optional)
 
@@ -125,6 +127,15 @@ Naming `branch` does not by itself let anyone write to it: `code-writer-t1/t2/t3
 `code-writer` takes one area at a time. When the change spans several, cut it into slices yourself before delegating:
 
 - one slice = one coherent change with its own acceptance criteria and no file shared with another in-flight slice. If two slices cannot avoid the same file, they are one slice.
+- a slice is divisible only if each part of the cut meets three conditions. Each part has its own acceptance criteria. No part shares a file with another part. All paths from `invariant_paths` are in the same part. Never cut across an invariant. Two slices that each change half of one invariant leave the tree broken between them. A small slice with difficult logic is `divisible: no` and stays whole. Its difficulty goes into the tier, not into a cut.
+- measure the volume of each `T2` or `T3` slice before you delegate it, and write it in the `volume` line. If a `divisible: yes` slice crosses a threshold, cut it before you delegate it. The thresholds are more than 8 files in `changes` or more than 3000 lines to read. These thresholds are starting values and are not calibrated yet. If the slice is `divisible: no`, do not cut it. Do these steps instead:
+  1. Give an anchor in `files_to_inspect` for each place that the slice changes.
+  2. If the files to read are over the threshold, send one `Explore` on `haiku` to summarize them first. Put the summary in `context`.
+  3. If the approach is open, run `planner` before you write the brief.
+- after a `T2` or `T3` run, look for two signs that the slice was too large for one run:
+  - the run used more than 80% of its tier's turn budget. Read the turns from `agent-stats.py`. The limits are 64 of 80 at T2 and 88 of 110 at T3.
+  - the run returned `PARTIAL` because its budget ran out.
+  If the slice needs another attempt after such a run, check `divisible` again before you write the next brief. If it is `yes`, classify the failure as `slicing`. Then recut the slice and reset the attempt counter. Do this at the first failure; do not wait for step 8. If it is `no`, classify the failure by step 8 as usual.
 - order slices by dependency: schemas, contracts, and interfaces first; callers after; tests and docs last.
 - run at most one `code-writer` at a time — slices are sequential by default. Only read-only work parallelizes: `Explore`, the researchers, `finding-verifier`, and the reviewer judging a diff that has stopped moving.
 - validate a slice that changes behavior before starting the next one. Never stack unverified slices.

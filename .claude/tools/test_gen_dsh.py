@@ -117,6 +117,12 @@ LLM = """\
           - id: custom-1
         apiKey: sk-FAKE-CUSTOM-0002
 """
+# A dspark route somebody has edited: a key the tool never sets (apiKey) and stale values of its own.
+DSPARK_EDITED = """\
+      dspark:
+        displayName: Old Spark
+        apiKey: sk-FAKE-DSPARK-0004
+"""
 DEEPSEEK = """\
 - id: llm-deepseek
   name: "@deepseek-ai/dsh-llm-deepseek-api-key"
@@ -310,12 +316,11 @@ def model(*levels: str) -> dict[str, Any]:
 
 
 CATALOG = {
-  "anthropic-messages": {"~google/gemini-flash-latest": model("low", "medium", "high")},
+  "anthropic-messages": {},
   "openai-completions": {
-    "qwen/qwen3.8-max-0902": model("minimal", "low", "medium", "high"),  # no xhigh: reviewer is clamped
+    # glm-latest has no low, so finding-verifier is clamped; kimi, argon and deepseek-v4.1-flash are absent on purpose
     "~google/gemini-pro-latest": model("low", "medium", "high"),
-    "~z-ai/glm-latest": model("low", "high", "max"),
-    "~deepseek/deepseek-v4-flash-latest": model("low", "high", "max"),
+    "~z-ai/glm-latest": model("medium", "high", "max"),
   },
 }
 
@@ -524,26 +529,41 @@ def test_agent_rows_carry_tools_model_and_clamped_effort(
   assert reviewer["agentPreset"] == "cc-agent-reviewer"
   assert "persona" not in reviewer and "toolFilter" not in reviewer
   assert role_tools(world, "reviewer") == {"read", "bash"}
-  # reviewer asks for xhigh, the catalog model tops out at high
-  assert reviewer["agentOptions"] == {
-    "provider": "openrouter", "model": "qwen/qwen3.8-max-0902", "reasoningEffort": "high",
-  }
+  # the reviewer model is not in the catalog: its levels are unknown, so the effort is omitted
+  assert reviewer["agentOptions"] == {"provider": "openrouter", "model": "google/gemini-4-argon"}
   assert role_persona(world, "reviewer").endswith("\n\nBody of reviewer.\n")
-  assert "reviewer: effort 'xhigh' is not supported by qwen/qwen3.8-max-0902; using 'high'" in (
-    capsys.readouterr().out
+  out = capsys.readouterr().out
+  assert (
+    "reviewer: model 'google/gemini-4-argon' is not in the DSH catalog; effort omitted, supported levels unknown"
+    in out
   )
+  assert "code-writer-t3: model 'moonshotai/kimi-k3.1-pro' is not in the DSH catalog" in out
+  # code-writer-t2 is not in the catalog either: warning, no effort
+  assert rows["cc-agent-code-writer-t2"]["config"]["agentOptions"] == {
+    "provider": "openrouter", "model": "deepseek/deepseek-v4.1-flash-1017",
+  }
+  assert (
+    "code-writer-t2: model 'deepseek/deepseek-v4.1-flash-1017' is not in the DSH catalog; "
+    "effort omitted, supported levels unknown" in out
+  )
+  # glm-latest has no low: finding-verifier goes to the nearest level
+  assert rows["cc-agent-finding-verifier"]["config"]["agentOptions"] == {
+    "provider": "openrouter", "model": "~z-ai/glm-latest", "reasoningEffort": "medium",
+  }
+  assert "finding-verifier: effort 'low' is not supported by ~z-ai/glm-latest; using 'medium'" in out
 
   researcher = rows["cc-agent-web-researcher"]["config"]
   assert researcher["agentPreset"] == "cc-agent-web-researcher"
   assert role_tools(world, "web-researcher") == {"web_search", "web_fetch", "read"}
-  assert researcher["agentOptions"] == {"provider": "openrouter", "model": "~deepseek/deepseek-v4-flash-latest"}
-  assert rows["cc-agent-test-runner"]["config"]["agentOptions"] == researcher["agentOptions"]
+  assert researcher["agentOptions"] == {"provider": "dspark", "model": "deepseek-v4-flash"}
+  # test-runner is on the dspark route, which has no levels: no effort
+  assert rows["cc-agent-test-runner"]["config"]["agentOptions"] == {
+    "provider": "dspark", "model": "deepseek-v4-flash",
+  }
 
   writer = rows["cc-agent-code-writer-t1"]["config"]
   assert role_tools(world, "code-writer-t1") == {"read", "grep", "glob", "edit", "write", "bash", "skill"}
-  assert writer["agentOptions"] == {
-    "provider": "openrouter", "model": "~deepseek/deepseek-v4-flash-latest", "reasoningEffort": "max",
-  }
+  assert writer["agentOptions"] == {"provider": "dspark", "model": "deepseek-v4-flash"}
   assert rows["cc-agent-planner"]["config"]["agentOptions"]["reasoningEffort"] == "high"
 
 
@@ -771,7 +791,7 @@ def test_agent_hooks_are_reported_and_every_persona_says_no_guard_applies(
   assert role_tools(world, "reviewer") == {"read", "bash"}  # bash stays
 
 
-def test_providers_merge_adds_missing_models_and_keeps_the_rest(world: World) -> None:
+def test_providers_merge_adds_dspark_and_missing_models_and_keeps_the_rest(world: World) -> None:
   old = entry(PATCH, "llm-pi-ai")["config"]["providers"]
   assert world.run("--write") == 0
   text = world.patch.read_text(encoding="utf-8")
@@ -782,9 +802,13 @@ def test_providers_merge_adds_missing_models_and_keeps_the_rest(world: World) ->
   models = providers["openrouter"]["models"]
   assert models[:2] == old["openrouter"]["models"]  # existing ones stay in place, extras included
   assert len(models) == 5
+  # the ids absent from the catalog are added too
   assert {m["id"] for m in models[2:]} == {
-    "qwen/qwen3.8-max-0902", "~deepseek/deepseek-v4-flash-latest", "~google/gemini-flash-latest",
+    "google/gemini-4-argon", "moonshotai/kimi-k3.1-pro", "deepseek/deepseek-v4.1-flash-1017",
   }
+  assert providers["dspark"]["apiKeyEnv"] == "DSPARK_API_KEY"
+  assert "apiKey" not in providers["dspark"]
+  assert providers["dspark"]["models"][0]["id"] == "deepseek-v4-flash"
   assert entry(text, "llm-deepseek") == entry(PATCH, "llm-deepseek")
   # literal keys are written exactly as they were: same value, same quoting, never masked
   for line in (
@@ -792,6 +816,23 @@ def test_providers_merge_adds_missing_models_and_keeps_the_rest(world: World) ->
   ):
     assert line in text
   assert "<redacted>" not in text
+
+
+def test_existing_dspark_route_keeps_keys_the_tool_does_not_set_and_names_them(
+  world: World, capsys: pytest.CaptureFixture[str]
+) -> None:
+  world.patch.write_text(HEADER + UI_CHAT + LLM + DSPARK_EDITED + DEEPSEEK, encoding="utf-8")
+
+  assert world.run("--write") == 0
+  out = capsys.readouterr().out
+
+  dspark = entry(world.patch.read_text(encoding="utf-8"), "llm-pi-ai")["config"]["providers"]["dspark"]
+  assert dspark["apiKey"] == "sk-FAKE-DSPARK-0004"  # the user's key stays
+  assert dspark["apiKeyEnv"] == "DSPARK_API_KEY"  # the tool's own keys are set
+  assert dspark["displayName"] != "Old Spark"
+  assert dspark["models"][0]["id"] == "deepseek-v4-flash"  # the stale route gets the tool's model
+  assert "dspark route: kept key 'apiKey'" in out
+  assert "sk-FAKE-DSPARK-0004" not in out  # the key is named, its value is not
 
 
 def test_rerun_leaves_the_file_byte_identical(
@@ -837,19 +878,17 @@ def test_unknown_tool_stops_the_run_before_anything_is_written(
   world.assert_untouched(before)
 
 
-def test_unknown_model_stops_the_run_before_anything_is_written(
+def test_model_missing_from_catalog_warns_and_dry_run_touches_nothing(
   world: World, capsys: pytest.CaptureFixture[str]
 ) -> None:
-  catalog = {api: dict(models) for api, models in CATALOG.items()}
-  del catalog["openai-completions"]["~z-ai/glm-latest"]
-  world.set_catalog(catalog)
   before = world.patch.read_bytes()
 
-  assert world.run("--write") == 1
+  assert world.run("--dry-run") == 0
 
-  assert "finding-verifier: model '~z-ai/glm-latest' is not in the OpenRouter catalog" in (
-    capsys.readouterr().err
-  )
+  assert (
+    "code-writer-t3: model 'moonshotai/kimi-k3.1-pro' is not in the DSH catalog; "
+    "effort omitted, supported levels unknown"
+  ) in capsys.readouterr().out
   world.assert_untouched(before)
 
 
@@ -894,7 +933,9 @@ def test_dry_run_shows_only_allowlisted_values(
   # allowlisted values and the generator's own marker stay readable
   assert "maxTokens: 555" in out
   assert "inline: {token: <redacted>, maxTokens: 777}" in out
+  assert "maxTokens: 8192" in out  # an added line (the dspark route)
   assert "apiKeyEnv: LEGACY_API_KEY" in out  # an env var name is not a secret
+  assert "apiKeyEnv: DSPARK_API_KEY" in out
   assert "Body of reviewer." not in out
   assert "agentPreset: cc-agent-reviewer" in out
   assert "prefix: <redacted>" in out
@@ -1574,6 +1615,7 @@ def test_unknown_global_working_directory_edits_stop_before_writing(
   '- insert:\n    - id: arbitrary-conditional\n      name: "@deepseek-ai/dsh-tool-fs"\n'
   '      disabled: !!js process.platform === "win32"\n',
   '- insert:\n    - id: creator-tools\n      name: "@deepseek-ai/dsh-tool-cordis"\n',
+  '- insert:\n    - id: ptc-executor\n      name: "@deepseek-ai/dsh-tool-executor-ptc"\n',
 ])
 def test_effective_global_model_tools_are_refused_before_writing(
   world: World, capsys: pytest.CaptureFixture[str], extra: str
@@ -1638,6 +1680,7 @@ def test_effective_global_group_switch_controls_tool_inheritance(
 @pytest.mark.parametrize("name", [
   "@deepseek-ai/dsh-tool-call-timeout-policy", "@deepseek-ai/dsh-tool-cordis/host",
   "@deepseek-ai/dsh-tool-subagent/model-selection-settings",
+  "@deepseek-ai/dsh-tool-executor-native",
   "@deepseek-ai/dsh-tools", "@deepseek-ai/dsh-scope", "@deepseek-ai/dsh-agent-tool-presentation",
 ])
 def test_global_service_plugins_are_preserved_without_being_treated_as_tools(world: World, name: str) -> None:
@@ -1725,6 +1768,104 @@ def test_group_targeted_insert_checks_nested_presets_with_effective_group_switch
   else:
     assert "active nested Agent Preset" in capsys.readouterr().err
     world.assert_untouched(before)
+
+
+def test_spark_route_and_roles_survive_second_generation(world: World) -> None:
+  assert world.run("--write") == 0
+  text = world.patch.read_text(encoding="utf-8")
+  route = entry(text, "llm-pi-ai")["config"]["providers"]["dspark"]
+  assert route["models"] == [{
+    "id": "deepseek-v4-flash", "name": "DeepSeek V4 Flash",
+    "contextWindow": 65536, "maxTokens": 8192, "input": ["text"],
+  }]
+  assert route["apiKeyEnv"] == "DSPARK_API_KEY"
+  before = entry(text, "llm-pi-ai")["config"]["providers"]["openrouter"]
+  assert world.run("--write") == 0
+  again = world.patch.read_text(encoding="utf-8")
+  assert again == text
+  assert entry(again, "llm-pi-ai")["config"]["providers"]["openrouter"] == before
+
+
+def app_layout(text: str) -> str:
+  """Как после перезаписи приложением: маркер `insert`-записи уходит со строки `- insert:` на следующую."""
+  return re.sub(r"^- insert:[ \t]+(# generated by .*)$", r"- insert:\n    \1", text, flags=re.M)
+
+
+def test_marker_on_the_second_line_of_an_insert_entry_counts_as_owned(
+  world: World, capsys: pytest.CaptureFixture[str]
+) -> None:
+  assert world.run("--write") == 0
+  moved = app_layout(world.patch.read_text(encoding="utf-8"))
+  assert moved != world.patch.read_text(encoding="utf-8")
+  world.patch.write_text(moved, encoding="utf-8")
+
+  assert world.run("--dry-run") == 0
+  assert "refusing" not in capsys.readouterr().err
+  assert world.run("--write") == 0
+  stable = world.patch.read_bytes()
+  assert world.run("--write") == 0
+  assert world.patch.read_bytes() == stable
+
+
+@pytest.mark.parametrize("row", [
+  # маркер только в тексте config
+  '- insert:\n    - id: preset-cc-agent-reviewer\n      name: "@deepseek-ai/dsh-agent-preset"\n'
+  f'      config: {{id: cc-agent-reviewer, plugins: [], note: "# {gen_dsh.MARKER}"}}\n',
+  # маркер после первой строки списка
+  '- insert:\n    - id: preset-cc-agent-reviewer\n      name: "@deepseek-ai/dsh-agent-preset"\n'
+  f'      config: {{id: cc-agent-reviewer, plugins: []}}\n    # {gen_dsh.MARKER}\n',
+  # однострочная запись пользователя, а метка в столбце 0 — это промежуток между записями
+  '- {insert: [{id: preset-cc-agent-reviewer, name: "@deepseek-ai/dsh-agent-preset", '
+  f'config: {{id: cc-agent-reviewer, plugins: [mine]}}}}]}}\n# {gen_dsh.MARKER}\n',
+  # первая строка с чужим комментарием, метка на второй
+  '- insert:  # note\n'
+  f'    # {gen_dsh.MARKER}\n'
+  '    - id: preset-cc-agent-reviewer\n      name: "@deepseek-ai/dsh-agent-preset"\n'
+  '      config: {id: cc-agent-reviewer, plugins: []}\n',
+])
+def test_marker_outside_the_first_two_lines_does_not_make_a_role_preset_owned(
+  world: World, capsys: pytest.CaptureFixture[str], row: str
+) -> None:
+  world.patch.write_text(PATCH + row, encoding="utf-8")
+  before = world.patch.read_bytes()
+
+  assert world.run("--write") == 1
+
+  assert "refusing to replace an unowned role preset" in capsys.readouterr().err
+  world.assert_untouched(before)
+
+
+def test_working_directory_migration_marker_check_accepts_both_layouts() -> None:
+  # Проверка миграции использует тот же has_marker; через main() вставка с этим id недостижима:
+  # вторая строка `insert` дублирует общую строку, и main() останавливается раньше.
+  first = f'- id: tool-working-directory  # {gen_dsh.MARKER}\n  disabled: true\n'
+  second = f'- insert:\n    # {gen_dsh.MARKER}\n    - id: tool-working-directory\n      disabled: true\n'
+  user = '- id: tool-working-directory\n  disabled: true  # explicit user choice\n'
+  assert gen_dsh.has_marker(first) and gen_dsh.has_marker(second)
+  assert not gen_dsh.has_marker(user)
+
+
+def test_has_marker_accepts_crlf_in_both_layouts() -> None:
+  assert gen_dsh.has_marker(f"- insert:  # {gen_dsh.MARKER}\r\n    - id: x\r\n")
+  assert gen_dsh.has_marker(f"- insert:\r\n    # {gen_dsh.MARKER}\r\n    - id: x\r\n")
+
+
+def test_crlf_patch_with_generator_entries_is_still_owned(world: World) -> None:
+  assert world.run("--write") == 0
+  text = world.patch.read_bytes()
+  world.patch.write_bytes(text.replace(b"\n", b"\r\n"))
+  assert world.run("--dry-run") == 0
+
+
+@pytest.mark.parametrize("marked", [True, False])
+def test_working_directory_root_row_with_marker_on_line_two(world: World, marked: bool) -> None:
+  mark = f"  # {gen_dsh.MARKER}\n" if marked else "  # my own note\n"
+  world.patch.write_text(PATCH + f"- id: tool-working-directory\n{mark}  disabled: true\n", encoding="utf-8")
+  assert world.run("--write") == 0
+  text = world.patch.read_text(encoding="utf-8")
+  # второй строкой метку признаёт только `- insert:`; пользовательский `disabled: true` не переопределяется
+  assert "cc-inherited-working-directory" not in text
+  assert "preset-ptc" not in text
 
 
 def test_backups_go_to_the_backup_dir_and_none_is_left_beside_the_files(world: World) -> None:

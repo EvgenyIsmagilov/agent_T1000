@@ -870,7 +870,7 @@ def test_the_generic_subagent_tool_reaches_the_hook_as_a_general_purpose_agent_c
 
 # --- require-orchestration over the synthetic per-session transcript ---
 
-def role_call(role: str, prompt: str = "slice_id: dsh-hooks\ninvariant_paths: none - test\ndata_sample: n/a\nspec_check: n/a\ndo the work", session: str = "sess-1") -> Payload:
+def role_call(role: str, prompt: str = "slice_id: dsh-hooks\ninvariant_paths: none - test\ndata_sample: n/a\nspec_check: n/a\ndivisible: no - test\ndo the work", session: str = "sess-1") -> Payload:
   return pre(role, {"description": "work", "prompt": prompt}, session=session)
 
 

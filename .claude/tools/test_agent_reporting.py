@@ -436,6 +436,144 @@ class HookAndStatsTests(unittest.TestCase):
             self.assertIn("некорректный формат", result.stdout)
             self.assertNotIn("без вердикта", result.stdout)
 
+    def test_stats_treats_nonstandard_status_line_as_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "runs.jsonl"
+            records = (
+                {
+                    "agent_type": "code-writer-t1", "report_metadata_status": "present",
+                    "contract_status": "invalid", "contract_reasons": ["nonstandard_status_line"],
+                },
+                {
+                    "agent_type": "code-writer-t2", "report_metadata_status": "present",
+                    "contract_status": "invalid",
+                    "contract_reasons": ["nonstandard_status_line", "missing_section:changes"],
+                },
+            )
+            log.write_text("".join(json.dumps(record) + "\n" for record in records))
+            result = subprocess.run(
+                [sys.executable, "-B", str(STATS_PATH), "--log", str(log)],
+                text=True, capture_output=True, check=True,
+            )
+            self.assertIn("ПОДОЗРИТЕЛЬНЫЕ — 1 из 2", result.stdout)
+            self.assertIn(
+                "нестандартная строка статуса (вердикт прочитан, предупреждение): 2",
+                result.stdout,
+            )
+            self.assertIn("некорректный формат (missing_section:changes)", result.stdout)
+
+    def test_stats_only_soft_rows_report_no_suspicious_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "runs.jsonl"
+            records = (
+                {
+                    "agent_type": "code-writer-t1", "report_metadata_status": "present",
+                    "contract_status": "invalid", "contract_reasons": ["nonstandard_status_line"],
+                },
+            )
+            log.write_text("".join(json.dumps(record) + "\n" for record in records))
+            result = subprocess.run(
+                [sys.executable, "-B", str(STATS_PATH), "--log", str(log)],
+                text=True, capture_output=True, check=True,
+            )
+            self.assertIn("ПОДОЗРИТЕЛЬНЫЕ — 0 из 1", result.stdout)
+            self.assertIn(
+                "нестандартная строка статуса (вердикт прочитан, предупреждение): 1",
+                result.stdout,
+            )
+            self.assertIn("подозрительных прогонов нет", result.stdout)
+            self.assertNotIn("предупреждений нет", result.stdout)
+
+
+class BriefMetricsTests(unittest.TestCase):
+    def identity(self, prompt: str) -> dict[str, object]:
+        with tempfile.TemporaryDirectory() as d:
+            t = Path(d) / "agent.jsonl"
+            t.write_text(json.dumps({"message": {"role": "user", "content": prompt}}) + "\n")
+            return HOOK.brief_identity(t)
+
+    def test_valid_metrics(self) -> None:
+        got = self.identity("slice_id: s1\ndivisible: No \u2014 one parser\nvolume: 9 files, 4200 lines")
+        self.assertEqual((got["divisible"], got["volume_files"], got["volume_lines"]), ("no", 9, 4200))
+        self.assertEqual(got["slice_id"], "s1")
+
+    def test_examples_before_fields_are_ignored(self) -> None:
+        fence = "```\nvolume: 9 files, 4200 lines\n```\n"
+        real = "divisible: no \u2014 one parser\nvolume: 3 files, 1498 lines"
+        examples = (
+            "Examples:\n- `divisible: yes \u2014 two files`\n- `volume: 9 files, 4200 lines`\n",
+            "Example:\n" + fence,
+        )
+        for ex in examples:
+            got = self.identity("slice_id: s1\n" + ex + real)
+            self.assertEqual((got["divisible"], got["volume_files"], got["volume_lines"]), ("no", 3, 1498), ex)
+
+    def metrics(self, prompt: str) -> tuple[object, object, object]:
+        got = self.identity(prompt)
+        return got["divisible"], got["volume_files"], got["volume_lines"]
+
+    def test_inline_triple_backtick_in_prose_is_not_a_fence(self) -> None:
+        prompt = "fields inside ``` fenced blocks are ignored\ndivisible: no \u2014 x\nvolume: 3 files, 10 lines"
+        self.assertEqual(self.metrics(prompt), ("no", 3, 10))
+
+    def test_inline_backticks_do_not_flip_fence_parity(self) -> None:
+        prompt = (
+            "Note: use ``` for code.\nExample:\n```\ndivisible: yes - x\nvolume: 9 files, 4200 lines\n```\n"
+            "divisible: no - y\nvolume: 3 files, 10 lines"
+        )
+        self.assertEqual(self.metrics(prompt), ("no", 3, 10))
+
+    def test_longer_outer_fence_is_not_closed_by_shorter_run(self) -> None:
+        prompt = (
+            "````\n```\ndivisible: yes - x\n```\nvolume: 9 files, 4200 lines\n````\n"
+            "divisible: no - y\nvolume: 3 files, 10 lines"
+        )
+        self.assertEqual(self.metrics(prompt), ("no", 3, 10))
+
+    def test_tilde_fence_hides_example(self) -> None:
+        prompt = "~~~\ndivisible: yes - x\nvolume: 9 files, 4200 lines\n~~~\ndivisible: no - y\nvolume: 3 files, 10 lines"
+        self.assertEqual(self.metrics(prompt), ("no", 3, 10))
+
+    def test_unclosed_fence_hides_rest(self) -> None:
+        got = self.identity("```\ndivisible: no \u2014 x\nvolume: 3 files, 5 lines")
+        self.assertEqual((got["divisible"], got["volume_files"], got["volume_lines"]), (None,) * 3)
+
+    def test_many_fences_large_prompt_is_fast(self) -> None:
+        import time
+        block = "```\nvolume: 9 files, 4200 lines\n```\n" + "x" * 2000 + "\n"
+        prompt = block * 260 + "divisible: no \u2014 one parser\nvolume: 3 files, 1498 lines"
+        self.assertGreater(len(prompt), 500_000)
+        start = time.perf_counter()
+        got = self.identity(prompt)
+        self.assertLess(time.perf_counter() - start, 1.0)
+        self.assertEqual((got["divisible"], got["volume_files"], got["volume_lines"]), ("no", 3, 1498))
+
+    def test_balanced_backtick_field_names(self) -> None:
+        got = self.identity("- `divisible`: yes, three modules\n- `volume`: 9 files, 4200 lines")
+        self.assertEqual((got["divisible"], got["volume_files"], got["volume_lines"]), ("yes", 9, 4200))
+
+    def test_thousands_separators(self) -> None:
+        for text in ("4,200 lines", "4 200 lines"):
+            got = self.identity(f"- `divisible`: yes \u2014 two files\n- volume: 12 files, {text}")
+            self.assertEqual((got["divisible"], got["volume_files"], got["volume_lines"]), ("yes", 12, 4200))
+
+    def test_placeholders_and_garbage_give_null(self) -> None:
+        for prompt in ("divisible: yes|no", "divisible: yes/no", "divisible: yesterday",
+                       "volume: N files, M lines", "volume: many files", "no metrics here"):
+            got = self.identity(prompt)
+            self.assertEqual((got["divisible"], got["volume_files"], got["volume_lines"]), (None,) * 3, prompt)
+
+    def test_missing_transcript_gives_null_metrics(self) -> None:
+        got = HOOK.brief_identity(None)
+        self.assertEqual((got["divisible"], got["volume_files"], got["volume_lines"]), (None,) * 3)
+
+    def test_brief_re_slice_id_unchanged(self) -> None:
+        spec = importlib.util.spec_from_file_location("bf", CLAUDE_DIR / "hooks" / "brief_fields.py")
+        bf = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bf)
+        self.assertEqual(set(bf.BRIEF_RE), {"slice_id", "tier", "previous_failure_class"})
+        self.assertEqual(bf.BRIEF_RE["slice_id"].search("- slice_id: abc-1\n").group(1), "abc-1")
+
 
 class HandbackHookTests(unittest.TestCase):
     REMINDER = {
@@ -484,7 +622,9 @@ class HandbackHookTests(unittest.TestCase):
             self.assertEqual(row["contract_status"], "valid")
             self.assertEqual(row["verdict"], "DONE")
             self.assertEqual(row["report_chars"], len(text))
-            self.assertEqual(row["schema"], 6)
+            self.assertEqual(row["schema"], 7)
+            self.assertIsNone(row["divisible"])
+            self.assertIsNone(row["volume_files"])
             self.assertNotIn(text, json.dumps(row))
 
     def test_pre_handback_stop_is_skipped_then_handback_logged_once(self) -> None:
@@ -575,6 +715,132 @@ class HandbackHookTests(unittest.TestCase):
             (row,) = self.rows(d, "runs.jsonl")
             self.assertEqual(row["report_source"], "none")
             self.assertEqual(row["report_metadata_status"], "unavailable")
+
+
+class RelaxedStatusLineTests(unittest.TestCase):
+    def validate(self, status_line: str) -> tuple[str | None, str, list[str]]:
+        text = report("Result", "DONE", ["Changes", "Verification"]).replace("DONE — summary", status_line)
+        verdict, _, contract, reasons = HOOK.validate_report("code-writer-t2", True, text)
+        return verdict, contract, reasons
+
+    def test_nonstandard_status_forms_keep_verdict_and_flag_contract(self) -> None:
+        for line in ("`DONE`: summary", "DONE: summary", "`DONE`. summary", "**DONE** — summary", "`DONE`, summary"):
+            with self.subTest(line=line):
+                verdict, contract, reasons = self.validate(line)
+                self.assertEqual(verdict, "DONE")
+                self.assertEqual(contract, "invalid")
+                self.assertEqual(reasons, ["nonstandard_status_line"])
+
+    def test_standard_status_stays_valid(self) -> None:
+        self.assertEqual(self.validate("`DONE` — summary"), ("DONE", "valid", []))
+
+    def test_lookalike_statuses_yield_no_verdict(self) -> None:
+        for line in ("DONEX: summary", "DONE_FOO — summary", "done: summary", "NOT DONE: summary"):
+            with self.subTest(line=line):
+                verdict, contract, reasons = self.validate(line)
+                self.assertIsNone(verdict)
+                self.assertIn("missing_or_invalid_status", reasons)
+                self.assertNotIn("nonstandard_status_line", reasons)
+
+
+class BackfillTests(unittest.TestCase):
+    TOOL = CLAUDE_DIR / "tools" / "backfill-verdicts.py"
+    REPORT = "### Result\n`DONE`: ok\n### Changes\nc\n### Verification\nv"
+
+    def row(self, agent_id: str) -> dict:
+        return {"agent_id": agent_id, "agent_type": "code-writer-t2", "verdict": None,
+                        "verdict_status": "lost", "report_source": None, "contract_status": "unavailable"}
+
+    def setup_dir(self, d: str, rows: list[dict], transcript_ids: list[str]) -> tuple[Path, Path]:
+        root = Path(d)
+        log = root / "runs.jsonl"
+        log.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        record = {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "SubagentHandback", "input": {"message": self.REPORT}}]}}
+        for agent_id in transcript_ids:
+            sub = root / "projects" / "p" / "s" / "subagents"
+            sub.mkdir(parents=True, exist_ok=True)
+            (sub / f"agent-{agent_id}.jsonl").write_text(json.dumps(record) + "\n")
+        return log, root / "out.jsonl"
+
+    def run_tool(self, log: Path, out: Path) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, "-B", str(self.TOOL), "--log", str(log), "--out", str(out),
+              "--projects-dir", str(log.parent / "projects")],
+            capture_output=True, text=True)
+
+    def test_backfills_from_handback_and_leaves_rows_without_transcript(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            log, out = self.setup_dir(d, [self.row("a1"), self.row("a2")], ["a1"])
+            result = self.run_tool(log, out)
+            self.assertEqual(result.returncode, 0)
+            first, second = (json.loads(line) for line in out.read_text().splitlines())
+            self.assertEqual(first["verdict"], "DONE")
+            self.assertEqual(first["verdict_status"], "captured")
+            self.assertEqual(first["report_source"], "handback")
+            self.assertEqual(first["contract_reasons"], ["nonstandard_status_line"])
+            self.assertRegex(first["verdict_backfilled"], r"^\d{4}-\d{2}-\d{2}$")
+            self.assertNotIn("backfilled", first)
+            self.assertEqual(first["report_chars"], len(self.REPORT))
+            self.assertIsNone(second["verdict"])
+            self.assertNotIn("verdict_backfilled", second)
+            self.assertIn("no_transcript: 1", result.stdout)
+
+    def test_shared_agent_id_backfills_only_last_row(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            log, out = self.setup_dir(d, [self.row("a1"), self.row("a1")], ["a1"])
+            result = self.run_tool(log, out)
+            first, second = (json.loads(line) for line in out.read_text().splitlines())
+            self.assertIsNone(first["verdict"])
+            self.assertEqual(second["verdict"], "DONE")
+            self.assertIn("skipped_ambiguous: 1", result.stdout)
+
+    def test_keeps_existing_backfilled_marker_and_fixes_stale_report_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            row = self.row("a1") | {"backfilled": "2026-11-04", "report_source": "none", "report_chars": 0}
+            log, out = self.setup_dir(d, [row], ["a1"])
+            self.run_tool(log, out)
+            (got,) = (json.loads(line) for line in out.read_text().splitlines())
+            self.assertEqual(got["backfilled"], "2026-11-04")
+            self.assertEqual(got["report_source"], "handback")
+            self.assertEqual(got["report_chars"], len(self.REPORT))
+
+    def test_continued_agent_does_not_inherit_earlier_run_text(self) -> None:
+        def rec(role: str, content: object, ts: str) -> str:
+            return json.dumps({"type": role, "timestamp": ts, "message": {"role": role, "content": content}}) + "\n"
+        with tempfile.TemporaryDirectory() as d:
+            first = self.row("x1") | {"timestamp": "2026-11-01T10:00:00+00:00"}
+            second = self.row("x1") | {"timestamp": "2026-11-01T11:00:00+00:00", "stop_reason": "max_tokens"}
+            log, out = self.setup_dir(d, [first, second], [])
+            sub = Path(d) / "projects" / "p" / "s" / "subagents"
+            sub.mkdir(parents=True)
+            (sub / "agent-x1.jsonl").write_text(
+                rec("user", "brief", "2026-11-01T09:00:00Z")
+                + rec("assistant", [{"type": "text", "text": self.REPORT}], "2026-11-01T10:00:00Z")
+                + rec("user", "continue", "2026-11-01T10:30:00Z")
+                + rec("assistant", [{"type": "tool_use", "name": "Bash", "input": {}}], "2026-11-01T10:31:00Z"))
+            result = self.run_tool(log, out)
+            rows = [json.loads(line) for line in out.read_text().splitlines()]
+            self.assertIsNone(rows[0]["verdict"])
+            self.assertIsNone(rows[1]["verdict"])
+            self.assertIn("no_report: 1", result.stdout)
+
+    def test_null_agent_id_row_unchanged_and_counted_separately(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            row = self.row("a1") | {"agent_id": None}
+            log, out = self.setup_dir(d, [row], [])
+            result = self.run_tool(log, out)
+            self.assertEqual(json.loads(out.read_text()), row)
+            self.assertIn("skipped_null_id: 1", result.stdout)
+            self.assertIn("skipped_ambiguous: 0", result.stdout)
+
+    def test_refuses_out_equal_to_log(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            log, _ = self.setup_dir(d, [self.row("a1")], ["a1"])
+            before = log.read_text()
+            result = self.run_tool(log, log)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(log.read_text(), before)
 
 
 class TierOfTests(unittest.TestCase):

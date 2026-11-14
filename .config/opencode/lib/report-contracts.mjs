@@ -256,7 +256,19 @@ export function validateReport(agentType, reportPresent, report) {
       const statusLine = structuralText(meaningful[start + 1][1]) || "";
       const statuses = contract.statuses.join("|");
       const match = new RegExp("^`?(" + statuses + ")`?(?=\\s|—|-|$)").exec(statusLine);
-      if (match) verdict = match[1];
+      if (match) {
+        verdict = match[1];
+      } else {
+        // Реальные отчёты пишут `DONE`: / DONE: / **DONE** —. Вердикт берём,
+        // но отступление от контракта остаётся в причинах.
+        const relaxed = new RegExp(
+          "^(?:\\*\\*)?`?(" + statuses + ")`?(?:\\*\\*)?(?=[\\s—\\-:.,;]|$)"
+        ).exec(statusLine);
+        if (relaxed) {
+          verdict = relaxed[1];
+          reasons.push("nonstandard_status_line");
+        }
+      }
     }
     if (verdict === null) reasons.push("missing_or_invalid_status");
   }

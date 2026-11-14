@@ -30,11 +30,51 @@ _VALUE = r"[ \t]*[^\n]*?[A-Za-z0-9А-Яа-яЁё]"
 # form as BRIEF_RE, but any non-empty value on the same line counts: the hook
 # checks presence, not truthfulness. Kept out of BRIEF_FIELDS so the
 # log-subagent.py output does not change.
-CHECKLIST_FIELDS = ("invariant_paths", "data_sample", "spec_check")
+CHECKLIST_FIELDS = ("invariant_paths", "data_sample", "spec_check", "divisible")
 CHECKLIST_RE = {
     name: re.compile(
         r"^[ \t]*[-*]?[ \t]*`?" + name + r"`?[ \t]*[:=]" + _VALUE,
         re.MULTILINE | re.IGNORECASE,
     )
     for name in CHECKLIST_FIELDS
+}
+# `divisible` строже: значение начинается с целого слова yes/no (не `yesterday`,
+# не `none`), затем на той же строке причина с буквой или цифрой.
+# JS-близнец в claude-hooks.js должен использовать тот же текст класса.
+CHECKLIST_RE["divisible"] = re.compile(
+    r"^[ \t]*[-*]?[ \t]*`?divisible`?[ \t]*[:=][ \t]*`?(?:yes|no)(?![A-Za-z0-9_А-Яа-яЁё|/])`?"
+    r"[^\n]*?[A-Za-z0-9А-Яа-яЁё]",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+# Brief metrics logged by log-subagent.py (schema 7). Kept out of BRIEF_FIELDS
+# so BRIEF_RE users (gates, dsh_adapter) are unaffected. `divisible` takes a
+# whole word yes/no, so placeholders like `yes|no` give no match. The field name
+# has balanced backticks or none, so an inline-code example (`volume: 9 ...`)
+# is skipped. Fenced ``` blocks are removed by strip_fences() before searching
+# (one linear pass; a regex lookahead per line was O(n^2)).
+# A diff line (`-divisible: yes`) is not told apart from a list item: not handled.
+_FENCE_RE = re.compile(
+    r"^ {0,3}(?:(`{3,})[^`\n]*(?:\n.*?(?:^ {0,3}\1`*[ \t]*$|\Z)|\Z)"
+    r"|(~{3,})[^\n]*(?:\n.*?(?:^ {0,3}\2~*[ \t]*$|\Z)|\Z))",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def strip_fences(text: str) -> str:
+    """Remove CommonMark fenced blocks. An unclosed fence hides the rest of the text."""
+    return _FENCE_RE.sub("", text)
+
+
+_NUM = r"\d{1,3}(?:[\xa0 ,_]\d{3})+|\d+"
+METRIC_RE = {
+    "divisible": re.compile(
+        r"^[ \t]*[-*]?[ \t]*(?:`divisible`|divisible)[ \t]*[:=][ \t]*`?(yes|no)(?![A-Za-z0-9_А-Яа-яЁё|/])",
+        re.MULTILINE | re.IGNORECASE,
+    ),
+    "volume": re.compile(
+        r"^[ \t]*[-*]?[ \t]*(?:`volume`|volume)[ \t]*[:=][ \t]*`?(" + _NUM + r")[ \t]*files?\b[ \t,;]*(" + _NUM
+        + r")[ \t]*lines?\b",
+        re.MULTILINE | re.IGNORECASE,
+    ),
 }

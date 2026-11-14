@@ -105,7 +105,7 @@ except Exception as e:
 # requires the brief to name a slice, not that the skill was loaded.
 SLICE_GATE_AGENTS = {"code-writer-t1", "code-writer-t2", "code-writer-t3", "test-runner"}
 
-# Agent types whose brief must carry the three checklist lines. Presence only.
+# Agent types whose brief must carry the checklist lines. Presence only; `divisible` also needs yes/no.
 CHECKLIST_GATE_AGENTS = {"code-writer-t2", "code-writer-t3"}
 
 
@@ -188,7 +188,8 @@ def checklist_gate_reason(agent_type, tool_input):
         f"Делегирование в subagent_type={agent_type} без обязательных строк брифа: "
         f"{', '.join(missing)}. Добавь в промпт каждую строку вида `<поле>: <значение>`, "
         "значение на той же строке. Если поле неприменимо, допустимы `none — <причина>` "
-        "или `n/a` (с причиной). Затем повтори этот вызов Agent."
+        "или `n/a` (с причиной). Для `divisible` значение: `yes` или `no` и причина на той же строке, "
+        "например `divisible: no — один парсер`. Затем повтори этот вызов Agent."
     )
 
 

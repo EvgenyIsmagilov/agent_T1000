@@ -29,7 +29,8 @@ from typing import TypedDict
 #       roughly the number of content blocks per turn.
 #   6 — report read from the SubagentHandback tool call in the transcript
 #       (`report_source`); the pre-handback stop event is skipped.
-SCHEMA = 6
+#   7 — brief metrics: `divisible`, `volume_files`, `volume_lines`.
+SCHEMA = 7
 
 DEFAULT_LOG = Path.home() / ".claude" / "logs" / "subagent-runs.jsonl"
 DEFAULT_SKIPPED_LOG = Path.home() / ".claude" / "logs" / "subagent-runs-skipped.jsonl"
@@ -43,9 +44,11 @@ HEADING_RE = re.compile(r"^ {0,3}###\s+(.+?)\s*$")
 # fields, which brief_identity() below already treats as optional.
 sys.path.insert(0, str(Path(__file__).parent))
 try:
-    from brief_fields import BRIEF_RE  # noqa: E402
+    from brief_fields import BRIEF_RE, METRIC_RE, strip_fences  # noqa: E402
 except ImportError:
     BRIEF_RE = dict.fromkeys(("slice_id", "tier", "previous_failure_class"))
+    METRIC_RE = dict.fromkeys(("divisible", "volume"))
+    strip_fences = None
 
 
 class RoleContract(TypedDict, total=False):
@@ -215,6 +218,7 @@ def brief_identity(path) -> dict:
     shows whether the call actually used the tier that was routed.
     """
     identity = dict.fromkeys(BRIEF_RE)
+    identity.update(divisible=None, volume_files=None, volume_lines=None)
     if not path or not Path(path).is_file():
         return identity
     prompt = first_user_text(path)
@@ -224,6 +228,17 @@ def brief_identity(path) -> dict:
         match = pattern.search(prompt)
         if match:
             identity[name] = match.group(1)
+    unfenced = strip_fences(prompt) if strip_fences else ""
+    if METRIC_RE["divisible"]:
+        match = METRIC_RE["divisible"].search(unfenced)
+        if match:
+            identity["divisible"] = match.group(1).lower()
+    if METRIC_RE["volume"]:
+        match = METRIC_RE["volume"].search(unfenced)
+        if match:
+            identity["volume_files"], identity["volume_lines"] = (
+                int(re.sub(r"\D", "", g)) for g in match.groups()
+            )
     return identity
 
 
@@ -443,6 +458,16 @@ def validate_report(
             match = re.match(r"^`?(" + statuses + r")`?(?=\s|—|-|$)", status_line)
             if match:
                 verdict = match.group(1)
+            else:
+                # Реальные отчёты пишут `DONE`: / DONE: / **DONE** —. Вердикт
+                # берём, но отступление от контракта остаётся в причинах.
+                relaxed = re.match(
+                    r"^(?:\*\*)?`?(" + statuses + r")`?(?:\*\*)?(?=[\s—\-:.,;]|$)",
+                    status_line,
+                )
+                if relaxed:
+                    verdict = relaxed.group(1)
+                    reasons.append("nonstandard_status_line")
         if verdict is None:
             reasons.append("missing_or_invalid_status")
 
@@ -645,6 +670,9 @@ def main():
         "slice_id": identity["slice_id"],
         "tier": identity["tier"],
         "previous_failure_class": identity["previous_failure_class"],
+        "divisible": identity["divisible"],
+        "volume_files": identity["volume_files"],
+        "volume_lines": identity["volume_lines"],
         "report_source": report_source,
         "report_metadata_status": metadata,
         "contract_status": contract_status,

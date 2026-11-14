@@ -69,7 +69,9 @@ const SLICE_ID_RE = /^[ \t]*[-*]?[ \t]*`?slice_id`?[ \t]*[:=][ \t]*`?([A-Za-z0-9
 // and CHECKLIST_RE in brief_fields.py (Python hook) — same line-anchored form,
 // value of at least one non-space character on the same line.
 const CHECKLIST_GATE_AGENTS = new Set(["code-writer-t2", "code-writer-t3"]);
-const CHECKLIST_FIELDS = ["invariant_paths", "data_sample", "spec_check"];
+const CHECKLIST_FIELDS = ["invariant_paths", "data_sample", "spec_check", "divisible"];
+// `divisible` строже: целое слово yes/no, затем причина с буквой или цифрой (тот же текст класса, что в brief_fields.py).
+CHECKLIST_RE.divisible = /^[ \t]*[-*]?[ \t]*`?divisible`?[ \t]*[:=][ \t]*`?(?:yes|no)(?![A-Za-z0-9_А-Яа-яЁё|/])`?[^\n]*?[A-Za-z0-9А-Яа-яЁё]/im;
 const CHECKLIST_RE = Object.fromEntries(
   CHECKLIST_FIELDS.map((name) => [name, new RegExp(`^[ \\t]*[-*]?[ \\t]*\`?${name}\`?[ \\t]*[:=][ \\t]*[^\\n]*?[A-Za-z0-9А-Яа-яЁё]`, "im")]),
 );
@@ -201,7 +203,7 @@ async function* readLines(path) {
   for await (const text of createReadStream(path, { encoding: "utf8" })) {
     const parts = text.split("\n");
     parts[0] = rest + parts[0];
-    rest = parts.pop(); // хвост без "\n" (пустой, если чанк завершился переводом строки)
+    rest = parts.pop(); // хвост без "\n" (пустой, если чанк кончился переводом строки)
     for (const part of parts) yield `${part}\n`;
   }
   if (rest) yield rest;
@@ -681,7 +683,7 @@ export const ClaudeHooks = async ({ directory }) => {
           const missing = CHECKLIST_FIELDS.filter((name) => !CHECKLIST_RE[name].test(text));
           if (missing.length) {
             throw new Error(
-              `Делегирование в subagentType=${subagentType} без обязательных строк брифа: ${missing.join(", ")}. Добавь в промпт каждую строку вида \`<поле>: <значение>\`, значение на той же строке. Если поле неприменимо, допустимы \`none — <причина>\` или \`n/a\` (с причиной). Затем повтори вызов task.`
+              `Делегирование в subagentType=${subagentType} без обязательных строк брифа: ${missing.join(", ")}. Добавь в промпт каждую строку вида \`<поле>: <значение>\`, значение на той же строке. Если поле неприменимо, допустимы \`none — <причина>\` или \`n/a\` (с причиной). Для \`divisible\` значение: \`yes\` или \`no\` и причина на той же строке, например \`divisible: no — один парсер\`. Затем повтори вызов task.`
             );
           }
         }

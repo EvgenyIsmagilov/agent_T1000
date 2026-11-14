@@ -244,9 +244,11 @@ Two limits are recorded rather than solved:
   mirrors both checks with `OPENCODE_ORCHESTRATION_GATE=0` /
   `OPENCODE_SLICE_GATE=0`.
   A third check refuses `code-writer-t2/t3` unless the prompt also carries
-  `invariant_paths:`, `data_sample:`, and `spec_check:` lines, each with a
-  value on the same line that holds a letter or digit (`CHECKLIST_RE` in
-  `brief_fields.py`; `none — <reason>` and `n/a` pass). These fields target
+  `invariant_paths:`, `data_sample:`, `spec_check:`, and `divisible:` lines,
+  each with a value on the same line that holds a letter or digit
+  (`CHECKLIST_RE` in `brief_fields.py`; `none — <reason>` and `n/a` pass).
+  `divisible:` is stricter: the value starts with the whole word `yes` or
+  `no`, then a reason (`divisible: no — one parser`). These fields target
   the spec failures found on 2026-11-10: missed twin code paths, unchecked
   external data formats, and briefs that contradict the ticket. DSH runs the
   same hook through `dsh_adapter.py`. Kill switches:

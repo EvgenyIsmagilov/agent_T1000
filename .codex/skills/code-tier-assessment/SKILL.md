@@ -7,6 +7,8 @@ description: "Classify an implementation slice into T1, T2 or T3 before delegati
 
 Classify every slice before writing its brief, and only after looking at the affected code — the goal statement alone does not tell you what the change actually touches. Pick the tier from checkable facts, never from a feeling of difficulty: vague sizing is how tiers drift toward whichever one feels safest.
 
+The tier depends on difficulty and criticality, not on volume. Volume decides only whether to cut the slice, and only a slice with `divisible: yes` gets cut (see `task-orchestration`'s **Slicing multi-file work**). The one exception is an indivisible slice over 15 files: it goes to T3 (see the scale trigger below).
+
 ## The three tiers
 
 | Tier | Agent | Model | Effort |
