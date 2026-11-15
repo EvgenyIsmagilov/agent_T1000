@@ -17,8 +17,7 @@ import unittest
 from pathlib import Path
 from types import ModuleType
 
-CLAUDE_DIR = Path.home() / ".claude"
-HOOK_PATH = CLAUDE_DIR / "hooks" / "require-orchestration.py"
+HOOK_PATH = Path(__file__).resolve().parent.parent / "hooks" / "require-orchestration.py"
 SECRET_MARKER = "SECRET-MARKER-xyz"
 
 
