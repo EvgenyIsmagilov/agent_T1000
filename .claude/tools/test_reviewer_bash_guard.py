@@ -21,8 +21,7 @@ from pathlib import Path
 from types import ModuleType
 from unittest.mock import patch
 
-CLAUDE_DIR = Path.home() / ".claude"
-HOOK_PATH = CLAUDE_DIR / "hooks" / "reviewer-bash-guard.py"
+HOOK_PATH = Path(__file__).resolve().parent.parent / "hooks" / "reviewer-bash-guard.py"
 
 
 def load_hook() -> ModuleType:
@@ -276,7 +275,6 @@ class EndToEndSubprocessTests(unittest.TestCase):
         decision = json.loads(result.stdout)["hookSpecificOutput"]
         self.assertEqual(decision["permissionDecision"], "deny")
         self.assertTrue(decision.get("permissionDecisionReason"))
-
 
     def test_deny_on_undecodable_stdin_keeps_the_input_bytes_out(self):
         # Строгое декодирование stdin бросает UnicodeDecodeError, чей repr цитирует байты входа.
