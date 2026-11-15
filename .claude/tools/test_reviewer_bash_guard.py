@@ -12,6 +12,7 @@ the fail-closed path for malformed hook input.
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -275,6 +276,29 @@ class EndToEndSubprocessTests(unittest.TestCase):
         decision = json.loads(result.stdout)["hookSpecificOutput"]
         self.assertEqual(decision["permissionDecision"], "deny")
         self.assertTrue(decision.get("permissionDecisionReason"))
+
+
+    def test_deny_on_undecodable_stdin_keeps_the_input_bytes_out(self):
+        # Строгое декодирование stdin бросает UnicodeDecodeError, чей repr цитирует байты входа.
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log_path = Path(tmp_dir) / "log.jsonl"
+            copy_path = self.write_patched_copy(Path(tmp_dir), log_path)
+            result = subprocess.run(
+                [sys.executable, str(copy_path)],
+                input=b"\xff SECRET-MARKER-xyz",
+                capture_output=True,
+                env={**os.environ, "PYTHONIOENCODING": "utf-8:strict"},
+            )
+            log_text = log_path.read_text()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(b"SECRET-MARKER-xyz", result.stdout)
+        self.assertNotIn("SECRET-MARKER-xyz", log_text)
+        decision = json.loads(result.stdout)["hookSpecificOutput"]
+        self.assertEqual(decision["permissionDecision"], "deny")
+        self.assertEqual(
+            decision["permissionDecisionReason"],
+            "хук не смог разобрать вход — отказ по умолчанию: UnicodeDecodeError",
+        )
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreToolUse gate for the Agent tool: model choice follows task-orchestration.
+"""PreToolUse gate for the Agent and start_session tools: model choice follows task-orchestration.
 
 The skill's "Budgets → Model and effort" table says which model a subagent
 gets, but a text rule held only while the model remembered it: a session once
@@ -17,6 +17,16 @@ own input:
   results, task notifications or messages from other sessions — so the agent
   cannot approve itself.
 
+The same approval rule gates `mcp__ccd_session__start_session` (skill
+subsection "Budgets → Sessions"). A session on opus/fable needs the user to
+name that family, whether `model` is explicit or inherited from the parent
+(the model of the last assistant record in the transcript; `fork` always
+inherits). A fresh session without `model` and with an unknown parent is
+denied: the skill requires `model` there. Allowed without a check: an offer
+(no `prompt`, no `proposal_id`), a bare `proposal_id` (its card was gated when
+created), and `target: "cloud"` / `preset` (logged as allow-unchecked-target,
+the model is not visible).
+
 Fails open on every uncertainty — unreadable transcript, missing path, any
 exception. This is a budget guardrail, not a security boundary. Passing calls
 get no output at all, so permission handling stays with the other hooks.
@@ -27,11 +37,15 @@ import json
 import os
 import re
 import sys
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, NoReturn
 
 LOG_PATH = Path.home() / ".claude" / "logs" / "agent-model-gate.jsonl"
 SKILL_REF = "~/.claude/skills/task-orchestration/SKILL.md, раздел «Budgets → Model and effort»"
+SESSION_REF = "~/.claude/skills/task-orchestration/SKILL.md, раздел «Budgets → Sessions»"
+START_SESSION = "mcp__ccd_session__start_session"
 
 # Built-in agents with no `model` of their own: without an explicit `model`
 # they run on whatever the env/session gives them. A missing subagent_type
@@ -45,7 +59,7 @@ PREMIUM_RES = {
 INTERRUPT_PREFIX = "[Request interrupted by user"
 
 
-def log_event(agent_type, model, decision, reason):
+def log_event(agent_type: str | None, model: str | None, decision: str, reason: str) -> None:
     try:
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with LOG_PATH.open("a") as f:
@@ -60,7 +74,7 @@ def log_event(agent_type, model, decision, reason):
         pass  # logging must never be the reason a delegation fails
 
 
-def deny(reason):
+def deny(reason: str) -> NoReturn:
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
@@ -79,7 +93,7 @@ def families_in(text: str) -> set[str]:
     return {family for family, rx in PREMIUM_RES.items() if rx.search(text)}
 
 
-def user_text(rec):
+def user_text(rec: Mapping[str, Any]) -> str | None:
     """Typed text of a genuine user record, or None for anything else.
 
     Skipped: tool results, skill bodies and other injected meta records,
@@ -107,7 +121,7 @@ def user_text(rec):
     return text
 
 
-def last_user_text(path):
+def last_user_text(path: str | Path) -> str | None:
     """Most recent message the user typed, or None if there is none.
 
     Only records tagged `origin.kind == "human"` count (written since CLI
@@ -136,11 +150,104 @@ def last_user_text(path):
     return last_human
 
 
-def main():
+def parent_model(path: str | None) -> str | None:
+    """`message.model` of the last main-chain assistant record with a real model, or None."""
+    if not path or not Path(path).is_file():
+        return None
+    model = None
+    with Path(path).open() as f:
+        for line in f:
+            if '"assistant"' not in line:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            message = rec.get("message")
+            if rec.get("type") != "assistant" or rec.get("isSidechain"):
+                continue
+            candidate = message.get("model") if isinstance(message, dict) else None
+            if isinstance(candidate, str) and candidate.startswith("claude-"):
+                model = candidate
+    return model
+
+
+def gate_start_session(data: dict[str, Any]) -> None:
+    tool_input = data.get("tool_input", {}) or {}
+    if not tool_input.get("prompt"):
+        # An offer and a bare proposal_id start nothing new to gate; any other
+        # promptless shape is allowed but leaves a trace.
+        bare = tool_input.get("proposal_id") and not any(
+            tool_input.get(k) for k in ("model", "context", "effort"))
+        if tool_input.get("initiation") != "offer" and not bare:
+            log_event("start_session", None, "allow-unchecked-shape",
+                      f"keys={sorted(tool_input)}")
+        return
+    model = str(tool_input.get("model") or "").strip()
+    if tool_input.get("target") == "cloud" or tool_input.get("preset"):
+        log_event("start_session", model, "allow-unchecked-target", "cloud/preset: model not visible")
+        return
+
+    transcript = data.get("transcript_path")
+    fork = tool_input.get("context") == "fork"
+    if fork or not model:
+        try:
+            effective = parent_model(transcript)
+        except OSError:
+            effective = None
+        if not effective:
+            if fork:
+                log_event("start_session", model, "allow-no-parent-model", f"transcript_path={transcript!r}")
+                return
+            reason = (
+                "start_session context=fresh без model, а модель родителя не определить. "
+                "Для fresh model обязателен: передай model (sonnet/haiku по таблице) "
+                f"({SESSION_REF})."
+            )
+            log_event("start_session", model, "deny-no-model", reason)
+            deny(reason)
+        source = "родителя" if fork else "родителя (model не передан)"
+    else:
+        effective, source = model, "вызова"
+
+    wanted = families_in(effective)
+    if not wanted:
+        log_event("start_session", effective, "allow", "non-premium")
+        return
+    family = "/".join(sorted(wanted))
+    if not transcript or not Path(transcript).is_file():
+        log_event("start_session", effective, "allow-no-transcript", f"transcript_path={transcript!r}")
+        return
+    try:
+        text = last_user_text(transcript)
+    except OSError as e:
+        log_event("start_session", effective, "allow-no-transcript",
+                  f"transcript_path={transcript!r}, {type(e).__name__}, errno={e.errno}")
+        return
+    if wanted <= (families_in(text) if text is not None else set()):
+        log_event("start_session", effective, "allow-user-premium", f"last user message names {family}")
+        return
+
+    reason = (
+        f"start_session на {effective} (модель {source}) запрещён: opus/fable в новой сессии "
+        f"только с разрешением пользователя ({SESSION_REF}). Передай model=sonnet или haiku "
+        f"(для fork это невозможно: fork наследует модель родителя, используй fresh). Если "
+        f"{family} действительно нужен — спроси пользователя с ценой и дождись ответа, где он "
+        f"сам назовёт {family} («да, {family}»); голое «да» не засчитывается."
+    )
+    log_event("start_session", effective, "deny-premium", reason)
+    deny(reason)
+
+
+def main() -> None:
     data = json.load(sys.stdin)
-    if data.get("tool_name") != "Agent":
+    tool = data.get("tool_name")
+    if tool not in ("Agent", START_SESSION):
         return
     if os.environ.get("CLAUDE_AGENT_MODEL_GATE") == "0":
+        return
+    if tool == START_SESSION:
+        gate_start_session(data)
         return
 
     tool_input = data.get("tool_input", {}) or {}
@@ -193,5 +300,7 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        log_event(None, None, "allow-on-error", repr(e))
+        # Exception text can quote transcript bytes (UnicodeDecodeError does), so log the type only.
+        detail = f", errno={e.errno}" if isinstance(e, OSError) else ""
+        log_event(None, None, "allow-on-error", f"{type(e).__name__}{detail}")
     sys.exit(0)

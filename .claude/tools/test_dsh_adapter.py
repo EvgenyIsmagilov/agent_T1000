@@ -814,6 +814,29 @@ def test_the_read_hook_fails_open_without_a_decision(stdin: bytes, home: Path) -
   assert guardrail_log(home)[-1]["decision"] == "allow-on-error"
 
 
+def test_the_read_hook_logs_the_type_of_an_error_not_its_text(home: Path) -> None:
+  # Strict stdin decoding raises UnicodeDecodeError, whose repr quotes the input bytes.
+  # The locale is pinned: under the C locale the same input raises JSONDecodeError, which quotes nothing.
+  env = {**make_env(home), "PYTHONIOENCODING": "utf-8:strict"}
+  result = run_claude_hook("check-file-size", b"\xff SECRET-MARKER-xyz", home, env)
+  assert (result.returncode, result.stdout) == (0, b"")
+  assert guardrail_log(home)[-1]["decision"] == "allow-on-error"
+  assert guardrail_log(home)[-1]["reason"] == "UnicodeDecodeError"
+  assert "SECRET-MARKER-xyz" not in (home / ".claude" / "logs" / "file-read-guardrail.jsonl").read_text()
+
+
+def test_the_config_hook_logs_the_type_of_an_error_not_its_text(home: Path) -> None:
+  # Same trigger as the read hook. The repr of UnicodeDecodeError quotes the input bytes.
+  env = {**make_env(home), "PYTHONIOENCODING": "utf-8:strict"}
+  result = run_claude_hook("config-protection", b"\xff SECRET-MARKER-xyz", home, env)
+  expected = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}}
+  assert (result.returncode, json.loads(result.stdout)) == (0, expected)
+  log = (home / ".claude" / "logs" / "config-protection.jsonl").read_text()
+  assert "SECRET-MARKER-xyz" not in log
+  assert json.loads(log)["decision"] == "allow-on-error"
+  assert json.loads(log)["reason"] == "UnicodeDecodeError"
+
+
 # --- payload translation, seen by a hook that echoes what it received ---
 
 @pytest.mark.parametrize("dsh_tool,claude_tool", [

@@ -163,7 +163,9 @@ def run_updates(root: Path) -> None:
                 tail = " | ".join((proc.stdout + proc.stderr).strip().splitlines()[-3:])
                 log(out, f"rc={proc.returncode} {time.monotonic() - started:.1f}s {tail}")
         except Exception as exc:
-            log(out, f"error: {exc!r}")
+            # Log only the type. The repr of UnicodeDecodeError quotes the raw child output bytes.
+            detail = f", errno={exc.errno}" if isinstance(exc, OSError) else ""
+            log(out, f"error: {type(exc).__name__}{detail}")
         finally:
             fcntl.flock(lock_fh, fcntl.LOCK_UN)
             lock_fh.close()

@@ -96,7 +96,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 try:
     from brief_fields import BRIEF_RE, CHECKLIST_FIELDS, CHECKLIST_RE  # noqa: E402
 except Exception as e:
-    log_event(None, "allow-on-error", repr(e))
+    # Log the type only: exception text can quote input bytes, as UnicodeDecodeError does.
+    detail = f", errno={e.errno}" if isinstance(e, OSError) else ""
+    log_event(None, "allow-on-error", f"{type(e).__name__}{detail}")
     allow()
 
 # Agent types whose per-slice metrics matter (~/.claude/tools/first-pass.py):
@@ -261,5 +263,7 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        log_event(None, "allow-on-error", repr(e))
+        # Log the type only: exception text can quote input bytes, as UnicodeDecodeError does.
+        detail = f", errno={e.errno}" if isinstance(e, OSError) else ""
+        log_event(None, "allow-on-error", f"{type(e).__name__}{detail}")
         allow()

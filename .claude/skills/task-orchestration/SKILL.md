@@ -70,6 +70,20 @@ Agents without their own `model` (`general-purpose`, `Explore`, `Plan`) run on `
 - Never pay twice for the same evidence. A check `code-writer` ran and reported does not get rerun by `test-runner`, except the slice's closing check (Work loop step 6), and a file a subagent summarized does not get re-read in the main context.
 - Cost and report state are measured, not guessed: `python3 ~/.claude/tools/agent-stats.py` (or `/agent-stats`) distinguishes a valid report, malformed format, and empty or unavailable metadata. A `max_tokens` stop is actual truncation evidence; `maxTurns` is a budget warning only.
 
+### Sessions
+
+<!-- Claude-only: Codex and OpenCode have no start_session tool. Do not mirror this subsection. -->
+
+A session that `mcp__ccd_session__start_session` starts follows the same table as a subagent. The tool can only lower the model: a session without `model` gets the parent's model, and a higher `model` has no effect.
+
+- With `context: "fresh"`, always pass `model` (for example `claude-sonnet-5-5`) and `effort` from the table.
+- A `context: "fork"` session always gets the parent's model. Use `fork` only when the task needs that model. Otherwise use `fresh` with a full `background`.
+- When an `offer` card gets the answer "New session", the call with `proposal_id` and `prompt` must also carry `model`, because the offer had none.
+- `opus` or `fable` for a session needs the same approval as for a subagent: the user's latest message names the family.
+- `target: "cloud"` and `preset` ignore `model` or set their own. Name the model you expect in the brief.
+
+`~/.claude/hooks/agent-model-gate.py` denies a `start_session` call that would run on `opus` or `fable` without that approval, whether the model is named or inherited. The hook does not check `effort` or a missing `model` on a cheaper parent.
+
 ## Executor tiers
 
 `code-writer` ships as three separate agent files, one per tier — `code-writer-t1`, `code-writer-t2`, `code-writer-t3` — because model, effort, turn budget, and working rules differ between them. Pick the tier file; do not override `model` or `effort` on a `code-writer` call.
