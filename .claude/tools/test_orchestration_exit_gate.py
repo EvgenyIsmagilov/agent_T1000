@@ -8,6 +8,8 @@ import importlib.util
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -17,6 +19,7 @@ from unittest import mock
 
 HOOK_PATH = Path(__file__).resolve().parent.parent / "hooks" / "orchestration-exit-gate.py"
 SID = "sess-1"
+SECRET_MARKER = "SECRET-MARKER-xyz"
 
 
 def load_hook():
@@ -168,6 +171,31 @@ class ExitGateTests(unittest.TestCase):
         lines = self.own.read_text().splitlines()
         self.assertEqual(len(lines), 1)
         self.assertEqual(json.loads(lines[0])["decision"], "allow-on-error")
+
+    def test_undecodable_stdin_logs_type_only(self):
+        stdin = io.TextIOWrapper(io.BytesIO(b"\xff " + SECRET_MARKER.encode()), encoding="utf-8")
+        with mock.patch.dict(os.environ, self.env), mock.patch.object(sys, "stdin", stdin):
+            self.hook.main()
+        logged = self.own.read_text()
+        self.assertNotIn(SECRET_MARKER, logged)
+        entry = json.loads(logged)
+        self.assertEqual((entry["decision"], entry["reason"]), ("allow-on-error", "UnicodeDecodeError"))
+
+    def test_import_error_logs_type_only(self):
+        tmp_dir = Path(self.dir.name)
+        shutil.copy(HOOK_PATH, tmp_dir / "orchestration-exit-gate.py")
+        (tmp_dir / "brief_fields.py").write_text(f'b"\\xff {SECRET_MARKER}".decode("utf-8")\n')
+        result = subprocess.run(
+            [sys.executable, str(tmp_dir / "orchestration-exit-gate.py")],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            env={**os.environ, "HOME": self.dir.name, "CLAUDE_EXIT_GATE_LOG": str(self.own)},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        logged = self.own.read_text()
+        self.assertNotIn(SECRET_MARKER, logged)
+        entry = json.loads(logged)
+        self.assertEqual((entry["decision"], entry["reason"]), ("allow-on-error", "UnicodeDecodeError"))
 
     def test_deny_is_logged(self):
         self.write_rows(row("code-writer-t2", "a", "2026-01-01T00:00:01"))

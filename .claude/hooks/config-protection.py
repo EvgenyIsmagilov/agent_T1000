@@ -219,5 +219,7 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as error:
-        log_event(None, "allow-on-error", repr(error))
+        # Log only the type. The repr of UnicodeDecodeError quotes the raw input bytes.
+        detail = f", errno={error.errno}" if isinstance(error, OSError) else ""
+        log_event(None, "allow-on-error", f"{type(error).__name__}{detail}")
         allow()

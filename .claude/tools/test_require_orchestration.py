@@ -8,6 +8,8 @@ never write to ~/.claude/logs.
 import importlib.util
 import io
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -17,6 +19,7 @@ from types import ModuleType
 
 CLAUDE_DIR = Path.home() / ".claude"
 HOOK_PATH = CLAUDE_DIR / "hooks" / "require-orchestration.py"
+SECRET_MARKER = "SECRET-MARKER-xyz"
 
 
 def load_hook() -> ModuleType:
@@ -235,6 +238,42 @@ class MissingBriefFieldsModuleTests(unittest.TestCase):
                 any(entry["decision"] == "allow-on-error" for entry in entries),
                 entries,
             )
+
+
+class FailOpenLogTests(unittest.TestCase):
+    """A fail-open handler logs the exception type, never its text."""
+
+    def test_undecodable_stdin_logs_type_only(self):
+        with tempfile.TemporaryDirectory() as home:
+            result = subprocess.run(
+                [sys.executable, str(HOOK_PATH)],
+                input=b"\xff " + SECRET_MARKER.encode(),
+                capture_output=True,
+                env={**os.environ, "HOME": home, "PYTHONIOENCODING": "utf-8:strict"},
+            )
+            log = (Path(home) / ".claude" / "logs" / "orchestration-gate.jsonl").read_text()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"], "allow")
+        self.assertNotIn(SECRET_MARKER, log)
+        self.assertEqual(json.loads(log)["reason"], "UnicodeDecodeError")
+
+    def test_import_error_logs_type_only(self):
+        with tempfile.TemporaryDirectory() as home:
+            hooks = Path(home) / "hooks"
+            hooks.mkdir()
+            shutil.copy(HOOK_PATH, hooks / "require-orchestration.py")
+            (hooks / "brief_fields.py").write_text(f'b"\\xff {SECRET_MARKER}".decode("utf-8")\n')
+            result = subprocess.run(
+                [sys.executable, str(hooks / "require-orchestration.py")],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                env={**os.environ, "HOME": home},
+            )
+            log = (Path(home) / ".claude" / "logs" / "orchestration-gate.jsonl").read_text()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"], "allow")
+        self.assertNotIn(SECRET_MARKER, log)
+        self.assertEqual(json.loads(log)["reason"], "UnicodeDecodeError")
 
 
 if __name__ == "__main__":

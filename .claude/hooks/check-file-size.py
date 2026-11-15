@@ -303,4 +303,6 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         # fail-open: только запись в лог и ни строки в stdout, Read идёт обычным путём разрешений
-        log_event(None, None, None, "allow-on-error", repr(e))
+        # В лог идёт только тип: текст исключения может цитировать байты входа (UnicodeDecodeError).
+        detail = f", errno={e.errno}" if isinstance(e, OSError) else ""
+        log_event(None, None, None, "allow-on-error", f"{type(e).__name__}{detail}")

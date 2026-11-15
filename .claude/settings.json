@@ -74,6 +74,16 @@
         ]
       },
       {
+        "matcher": "mcp__ccd_session__start_session",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/agent-model-gate.py",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "Edit|Write",
         "hooks": [
           {

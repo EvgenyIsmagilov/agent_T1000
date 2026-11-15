@@ -194,7 +194,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 try:
     from brief_fields import BRIEF_RE  # noqa: E402
 except Exception as e:
-    log_event(None, "allow-on-error", repr(e))
+    # Log the type only: exception text can quote input bytes, as UnicodeDecodeError does.
+    detail = f", errno={e.errno}" if isinstance(e, OSError) else ""
+    log_event(None, "allow-on-error", f"{type(e).__name__}{detail}")
     sys.exit(0)
 
 
@@ -204,7 +206,9 @@ def main() -> None:
     try:
         result = decide(json.load(sys.stdin))
     except Exception as e:
-        log_event(None, "allow-on-error", repr(e))
+        # Log the type only: exception text can quote input bytes, as UnicodeDecodeError does.
+        detail = f", errno={e.errno}" if isinstance(e, OSError) else ""
+        log_event(None, "allow-on-error", f"{type(e).__name__}{detail}")
         return
     if result:
         tool_name, reason = result
